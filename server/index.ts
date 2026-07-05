@@ -66,10 +66,37 @@ app.get('/api/webgui/models', async (_req, res) => {
   }
 })
 
+app.get('/api/webgui/skills', async (_req, res) => {
+  try {
+    const skills = await proxyHermes('/v1/skills')
+    res.status(skills.status).json(skills.body)
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.get('/api/webgui/toolsets', async (_req, res) => {
+  try {
+    const toolsets = await proxyHermes('/v1/toolsets')
+    res.status(toolsets.status).json(toolsets.body)
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+})
+
 app.get('/api/webgui/sessions', async (_req, res) => {
   try {
     const sessions = await proxyHermes('/api/sessions?limit=60&order=recent')
     res.status(sessions.status).json(sessions.body)
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.post('/api/webgui/sessions', async (_req, res) => {
+  try {
+    const session = await proxyHermes('/api/sessions', { method: 'POST', body: '{}' })
+    res.status(session.status).json(session.body)
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : String(error) })
   }
