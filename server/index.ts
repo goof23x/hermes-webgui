@@ -93,6 +93,15 @@ app.get('/api/webgui/sessions', async (_req, res) => {
   }
 })
 
+app.get('/api/webgui/sessions/:sessionId/messages', async (req, res) => {
+  try {
+    const messages = await proxyHermes(`/api/sessions/${encodeURIComponent(req.params.sessionId)}/messages`)
+    res.status(messages.status).json(messages.body)
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+})
+
 app.post('/api/webgui/sessions', async (_req, res) => {
   try {
     const session = await proxyHermes('/api/sessions', { method: 'POST', body: '{}' })

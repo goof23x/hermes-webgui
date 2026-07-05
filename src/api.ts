@@ -1,4 +1,24 @@
-export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+export type ChatMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string }
+
+export type SessionSummary = {
+  id?: string
+  session_id?: string
+  title?: string | null
+  name?: string | null
+  message_count?: number
+  last_active?: number
+  started_at?: number
+  source?: string | null
+}
+
+export type SessionMessageRecord = {
+  id?: number | string
+  role: ChatMessage['role'] | string
+  content?: string | null
+  tool_calls?: unknown
+  tool_name?: string | null
+  timestamp?: number
+}
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) } })
@@ -11,6 +31,7 @@ export function health() { return api<Record<string, unknown>>('/api/webgui/heal
 export function capabilities() { return api<Record<string, unknown>>('/api/webgui/capabilities') }
 export function models() { return api<Record<string, unknown>>('/api/webgui/models') }
 export function sessions() { return api<Record<string, unknown>>('/api/webgui/sessions') }
+export function sessionMessages(sessionId: string) { return api<Record<string, unknown>>(`/api/webgui/sessions/${encodeURIComponent(sessionId)}/messages`) }
 export function skills() { return api<Record<string, unknown>>('/api/webgui/skills') }
 export function toolsetsApi() { return api<Record<string, unknown>>('/api/webgui/toolsets') }
 export async function createSession() { return api<Record<string, unknown>>('/api/webgui/sessions', { method: 'POST', body: '{}' }) }
