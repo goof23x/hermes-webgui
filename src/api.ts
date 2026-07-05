@@ -1,4 +1,8 @@
-export type ChatMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string }
+export type ChatMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+  timestamp?: number
+}
 
 export type SessionSummary = {
   id?: string
@@ -6,9 +10,13 @@ export type SessionSummary = {
   title?: string | null
   name?: string | null
   message_count?: number
+  tool_call_count?: number
   last_active?: number
   started_at?: number
+  ended_at?: number | null
   source?: string | null
+  model?: string | null
+  preview?: string | null
 }
 
 export type SessionMessageRecord = {
@@ -36,8 +44,11 @@ export function skills() { return api<Record<string, unknown>>('/api/webgui/skil
 export function toolsetsApi() { return api<Record<string, unknown>>('/api/webgui/toolsets') }
 export async function createSession() { return api<Record<string, unknown>>('/api/webgui/sessions', { method: 'POST', body: '{}' }) }
 export async function chat(messages: ChatMessage[], sessionId?: string) {
+  const apiMessages = messages
+    .filter(message => message.role !== 'tool')
+    .map(({ role, content }) => ({ role, content }))
   return api<{ choices?: Array<{ message: ChatMessage }> }>('/api/webgui/chat', {
     method: 'POST',
-    body: JSON.stringify({ messages, sessionId })
+    body: JSON.stringify({ messages: apiMessages, sessionId })
   })
 }
