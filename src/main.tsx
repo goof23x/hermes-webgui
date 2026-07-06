@@ -56,7 +56,7 @@ import {
 } from './api'
 import { toolCatalog, toolsets } from './toolCatalog'
 
-type View = 'chat' | 'capabilities' | 'messaging' | 'artifacts' | 'projects' | 'memory' | 'skills' | 'settings'
+type View = 'chat' | 'support' | 'capabilities' | 'messaging' | 'artifacts' | 'projects' | 'memory' | 'skills' | 'settings'
 type IconType = React.ComponentType<{ size?: number }>
 type ContextMenuItem = { destructive?: boolean; disabled?: boolean; icon?: IconType; label: string; onSelect: () => void; separatorBefore?: boolean }
 type ContextMenuState = { items: ContextMenuItem[]; title?: string; x: number; y: number } | null
@@ -77,6 +77,7 @@ type SessionActions = {
 const defaultPrefs: UiPrefs = { accent: '#8eb7ff', density: 'cozy', fontScale: 1, showRightRail: true, showToolMessages: false, simplifyCards: true }
 const nav: Array<[View, string, IconType]> = [
   ['chat', 'New session', Plus],
+  ['support', 'Mobile Support', MessageSquare],
   ['capabilities', 'Capabilities', Brain],
   ['messaging', 'Messaging', MessageSquare],
   ['artifacts', 'Artifacts', Box],
@@ -307,6 +308,27 @@ function SettingsView({ contextActions, prefs, setPrefs }: { contextActions: Con
   </section><DataPanel contextActions={contextActions} title="Settings / Toolsets" loader={toolsetsApi} icon={Settings} simplifyCards={prefs.simplifyCards}/></main>
 }
 
+function SupportView() {
+  const [step, setStep] = useState<'start' | 'issue' | 'services' | 'handoff'>('start')
+  const serviceCards = [
+    ['Managed IT', 'Ongoing device, network, account, and user support.'],
+    ['Networking', 'Wi-Fi, routing, firewalls, remote access, and secure offices.'],
+    ['Automation', 'AI workflows, business automations, dashboards, and integrations.'],
+    ['Security', 'Backups, MFA, endpoint hardening, monitoring, and recovery planning.']
+  ]
+  return <main className="supportShell"><section className="phoneFrame">
+    <header><b>A1Tech Support</b><span>online now</span></header>
+    <div className="phoneMessages">
+      <div className="bubble agent">Hi — I can help with support, new services, or an urgent problem. What do you need today?</div>
+      {step === 'start' && <div className="quickReplies"><button onClick={() => setStep('services')}>Show me services</button><button onClick={() => setStep('issue')}>Report a problem</button><button onClick={() => setStep('handoff')}>Talk to A1Tech</button></div>}
+      {step === 'services' && <><div className="bubble user">I want to see what A1Tech offers.</div><div className="bubble agent">Here are the most common ways we help. Pick one and we’ll turn it into a simple request.</div><div className="mobileCards">{serviceCards.map(([title, body]) => <article key={title}><b>{title}</b><p>{body}</p></article>)}</div></>}
+      {step === 'issue' && <><div className="bubble user">Something is broken and I need help.</div><div className="bubble agent">Got it. Send a short description, the affected user/device, and how urgent it is. We’ll route it to A1Tech.</div><div className="supportForm"><input placeholder="What is happening?"/><input placeholder="Who or what is affected?"/><select><option>Normal priority</option><option>High priority</option><option>Emergency</option></select><button onClick={() => setStep('handoff')}>Prepare support request</button></div></>}
+      {step === 'handoff' && <><div className="bubble user">I’m ready to contact A1Tech.</div><div className="bubble agent">Perfect — your request is ready. Next step: send it to A1Tech with your contact details and preferred callback method.</div><div className="quickReplies"><button>Text A1Tech</button><button>Email request</button><button>Schedule call</button></div></>}
+    </div>
+    <footer><button onClick={() => setStep('services')}>Services</button><button onClick={() => setStep('issue')}>Problem</button><button onClick={() => setStep('handoff')}>Contact</button></footer>
+  </section><section className="supportBrief"><h2>Mobile-first Support Experience</h2><p>This page is designed for your phone at <b>192.168.0.88</b>: short chat bubbles, clear actions, and a smooth path from “what do you offer?” to “I need help.”</p><ul><li>End-user friendly service discovery</li><li>Problem intake without technical jargon</li><li>Direct handoff to A1Tech for support or new work</li></ul></section></main>
+}
+
 function ToolMatrix({ contextActions, large = false, simplifyCards = true }: { contextActions: ContextActions; large?: boolean; simplifyCards?: boolean }) {
   const [filter, setFilter] = useState('')
   const filtered = useMemo(() => toolCatalog.filter(tool => `${tool.name} ${tool.toolset} ${tool.description}`.toLowerCase().includes(filter.toLowerCase())), [filter])
@@ -364,6 +386,7 @@ function BottomBar({ activeView, healthData, messages, selectedSession, sessionC
 }
 
 function ActiveView({ activeView, contextActions, messages, prefs, selectedSessionId, selectedTitle, sessionActions, setMessages, setPrefs, titleOverrides }: { activeView: View; contextActions: ContextActions; messages: ChatMessage[]; prefs: UiPrefs; selectedSessionId?: string; selectedTitle?: string; sessionActions: SessionActions; setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>; setPrefs: (prefs: UiPrefs) => void; titleOverrides: Record<string, string> }) {
+  if (activeView === 'support') return <SupportView />
   if (activeView === 'capabilities') return <CapabilityView contextActions={contextActions} prefs={prefs} />
   if (activeView === 'messaging') return <MessagingView contextActions={contextActions} selectedSessionId={selectedSessionId} sessionActions={sessionActions} titleOverrides={titleOverrides}/>
   if (activeView === 'artifacts') return <DataPanel contextActions={contextActions} title="Artifacts / Models" loader={models} icon={Box} simplifyCards={prefs.simplifyCards} />
