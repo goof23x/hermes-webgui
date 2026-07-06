@@ -2,6 +2,7 @@ export type ChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
   timestamp?: number
+  attachments?: Array<{ kind: 'image' | 'audio' | 'file'; name: string; type: string; url: string; modelHint: string }>
 }
 
 export type SessionSummary = {

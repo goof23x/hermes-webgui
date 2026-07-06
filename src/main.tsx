@@ -56,11 +56,11 @@ import {
 } from './api'
 import { toolCatalog, toolsets } from './toolCatalog'
 
-type View = 'chat' | 'support' | 'capabilities' | 'messaging' | 'artifacts' | 'projects' | 'memory' | 'skills' | 'settings'
+type View = 'chat' | 'capabilities' | 'messaging' | 'artifacts' | 'projects' | 'memory' | 'skills' | 'settings'
 type IconType = React.ComponentType<{ size?: number }>
 type ContextMenuItem = { destructive?: boolean; disabled?: boolean; icon?: IconType; label: string; onSelect: () => void; separatorBefore?: boolean }
 type ContextMenuState = { items: ContextMenuItem[]; title?: string; x: number; y: number } | null
-type UiPrefs = { accent: string; density: 'cozy' | 'compact'; fontScale: number; showRightRail: boolean; showToolMessages: boolean; simplifyCards: boolean }
+type UiPrefs = { accent: string; assistantBubble: string; density: 'cozy' | 'compact'; fontScale: number; showRightRail: boolean; showToolMessages: boolean; simplifyCards: boolean; userBubble: string }
 type ContextActions = { copyText: (text: string) => void; openMenu: (event: React.MouseEvent, title: string, items: ContextMenuItem[]) => void }
 
 type SessionActions = {
@@ -74,10 +74,9 @@ type SessionActions = {
   renameSession: (session: SessionSummary) => void
 }
 
-const defaultPrefs: UiPrefs = { accent: '#9b4238', density: 'cozy', fontScale: 1, showRightRail: true, showToolMessages: false, simplifyCards: true }
+const defaultPrefs: UiPrefs = { accent: '#9b4238', assistantBubble: '#2b2b2b', density: 'cozy', fontScale: 1, showRightRail: true, showToolMessages: false, simplifyCards: true, userBubble: '#9b4238' }
 const nav: Array<[View, string, IconType]> = [
   ['chat', 'New session', Plus],
-  ['support', 'Mobile Support', MessageSquare],
   ['capabilities', 'Capabilities', Brain],
   ['messaging', 'Messaging', MessageSquare],
   ['artifacts', 'Artifacts', Box],
@@ -213,13 +212,29 @@ function SessionButton({ contextActions, selectedSessionId, session, sessionActi
 }
 
 function ChatPane({ contextActions, messages, selectedTitle, setMessages }: { contextActions: ContextActions; messages: ChatMessage[]; selectedTitle?: string; setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> }) {
+  const [attachments, setAttachments] = useState<NonNullable<ChatMessage['attachments']>>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [modelMode, setModelMode] = useState<'general' | 'vision' | 'audio'>('general')
+
+  function attachFiles(files: FileList | null) {
+    if (!files?.length) return
+    const next: NonNullable<ChatMessage['attachments']> = Array.from(files).map(file => {
+      const kind: 'image' | 'audio' | 'file' = file.type.startsWith('image/') ? 'image' : file.type.startsWith('audio/') ? 'audio' : 'file'
+      const modelHint = kind === 'image' ? 'vision/image model' : kind === 'audio' ? 'audio/transcription model' : 'general file context'
+      return { kind, modelHint, name: file.name, type: file.type || 'application/octet-stream', url: URL.createObjectURL(file) }
+    })
+    setAttachments(current => [...current, ...next])
+    if (next.some(file => file.kind === 'image')) setModelMode('vision')
+    else if (next.some(file => file.kind === 'audio')) setModelMode('audio')
+  }
+
   async function submit() {
-    if (!input.trim() || busy) return
+    if ((!input.trim() && !attachments?.length) || busy) return
     const now = Date.now() / 1000
-    const next = [...messages, { role: 'user' as const, content: input.trim(), timestamp: now }]
-    setMessages(next); setInput(''); setBusy(true)
+    const attachNote = attachments?.length ? `\n\nAttachments: ${attachments.map(file => `${file.name} (${file.modelHint})`).join(', ')}` : ''
+    const next = [...messages, { role: 'user' as const, content: `${input.trim() || 'Attached files for review.'}${attachNote}`, timestamp: now, attachments }]
+    setMessages(next); setInput(''); setAttachments([]); setBusy(true)
     try {
       const res = await chat(next)
       const reply = res.choices?.[0]?.message || { role: 'assistant' as const, content: JSON.stringify(res, null, 2) }
@@ -228,21 +243,32 @@ function ChatPane({ contextActions, messages, selectedTitle, setMessages }: { co
       setMessages([...next, { role: 'assistant', content: `Hermes API error: ${error instanceof Error ? error.message : String(error)}`, timestamp: Date.now() / 1000 }])
     } finally { setBusy(false) }
   }
+
   return <main className="chat" onContextMenu={event => contextActions.openMenu(event, 'Chat', [
     { icon: Plus, label: 'New local draft', onSelect: () => setInput('') },
     { icon: Copy, label: 'Copy transcript', onSelect: () => contextActions.copyText(messages.map(message => `${message.role} ${formatClock(message.timestamp)}: ${message.content}`).join('\n\n')) },
     { icon: Trash2, label: 'Clear local chat', destructive: true, separatorBefore: true, onSelect: () => setMessages([{ role: 'assistant', content: 'Local chat cleared.', timestamp: Date.now() / 1000 }]) }
   ])}>
-    <div className="hero"><h1>HERMES AGENT</h1><p>{selectedTitle ? `loaded: ${selectedTitle}` : 'one task at a time, now in a web browser'}</p></div>
-    <div className="messages">{messages.map((message, index) => <div key={index} className={`msg ${message.role}`} onContextMenu={event => contextActions.openMenu(event, `${message.role} message`, [
+    {messages.length <= 1 && <div className="hero"><h1>HERMES AGENT</h1><p>{selectedTitle ? `loaded: ${selectedTitle}` : 'one task at a time, now in a web browser'}</p></div>}
+    <div className="messages chatReadable">{messages.map((message, index) => <article key={index} className={`msg ${message.role}`} onContextMenu={event => contextActions.openMenu(event, `${message.role} message`, [
       { icon: Copy, label: 'Copy message', onSelect: () => contextActions.copyText(message.content) },
       { icon: Copy, label: 'Copy role + message', onSelect: () => contextActions.copyText(`${message.role}: ${message.content}`) },
       { icon: Clock, label: 'Copy timestamp', disabled: !message.timestamp, onSelect: () => contextActions.copyText(formatClock(message.timestamp)) }
     ])}>
       <div className="msgHeader"><b>{message.role}</b><span>{message.timestamp ? `${messageVerb(message.role)} ${formatClock(message.timestamp)}` : 'time unavailable'}</span></div>
       <pre>{message.content}</pre>
-    </div>)}</div>
-    <div className="composer"><button title="New local draft" onClick={() => setInput('')}><Plus size={20}/></button><textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit() } }} placeholder="Ask Hermes..."/><button aria-label="Send" onClick={submit} disabled={busy}><Send size={20}/></button></div>
+      {!!message.attachments?.length && <div className="attachmentPreview">{message.attachments.map(file => <div key={file.url} className="attachmentCard"><span>{file.kind === 'image' ? 'Image' : file.kind === 'audio' ? 'Audio' : 'File'}</span>{file.kind === 'image' && <img src={file.url} alt={file.name}/>} {file.kind === 'audio' && <audio src={file.url} controls/>}<b>{file.name}</b><small>{file.modelHint}</small></div>)}</div>}
+    </article>)}</div>
+    <div className="composer chatgptComposer">
+      <input id="chat-file-input" type="file" multiple accept="image/*,audio/*,.txt,.md,.pdf,.csv,.json" onChange={event => attachFiles(event.currentTarget.files)} hidden />
+      <button title="Attach image/audio/file" onClick={() => document.getElementById('chat-file-input')?.click()}><Plus size={20}/></button>
+      <div className="composerStack">
+        {!!attachments?.length && <div className="pendingAttachments">{attachments.map(file => <button key={file.url} onClick={() => setAttachments(current => current?.filter(item => item.url !== file.url))}>{file.kind}: {file.name} · {file.modelHint} ×</button>)}</div>}
+        <textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit() } }} placeholder="Ask Hermes..."/>
+        <div className="composerMeta"><span>Mode</span><select value={modelMode} onChange={event => setModelMode(event.target.value as typeof modelMode)}><option value="general">General chat</option><option value="vision">Vision / images</option><option value="audio">Audio / voice</option></select></div>
+      </div>
+      <button aria-label="Send" onClick={submit} disabled={busy}><Send size={20}/></button>
+    </div>
   </main>
 }
 
@@ -297,6 +323,8 @@ function SettingsView({ contextActions, prefs, setPrefs }: { contextActions: Con
     <div className="pageTitle"><SlidersHorizontal size={24}/><h2>Customize WebGUI</h2></div>
     <div className="prefsGrid">
       <label>Accent color<input type="color" value={prefs.accent} onChange={event => update({ accent: event.target.value })}/></label>
+      <label>User bubble<input type="color" value={prefs.userBubble} onChange={event => update({ userBubble: event.target.value })}/></label>
+      <label>Assistant bubble<input type="color" value={prefs.assistantBubble} onChange={event => update({ assistantBubble: event.target.value })}/></label>
       <label>Density<select value={prefs.density} onChange={event => update({ density: event.target.value as UiPrefs['density'] })}><option value="cozy">Cozy</option><option value="compact">Compact</option></select></label>
       <label>Font scale<input type="range" min="0.85" max="1.2" step="0.05" value={prefs.fontScale} onChange={event => update({ fontScale: Number(event.target.value) })}/></label>
       <button type="button" onClick={() => update({ showRightRail: !prefs.showRightRail })}>Show right rail <b>{prefs.showRightRail ? 'On' : 'Off'}</b></button>
@@ -306,60 +334,6 @@ function SettingsView({ contextActions, prefs, setPrefs }: { contextActions: Con
       <button type="button" onClick={() => contextActions.copyText(shortJson(prefs, 2000))}>Copy settings</button>
     </div>
   </section><DataPanel contextActions={contextActions} title="Settings / Toolsets" loader={toolsetsApi} icon={Settings} simplifyCards={prefs.simplifyCards}/></main>
-}
-
-function SupportView() {
-  const [step, setStep] = useState<'start' | 'issue' | 'services' | 'handoff'>('start')
-  const serviceCards = [
-    ['Managed IT', 'Help desk, devices, accounts, patching, and day-to-day support.'],
-    ['Network & Wi‑Fi', 'Reliable Wi‑Fi, firewalls, VPNs, remote access, and office networks.'],
-    ['Automation & AI', 'Dashboards, intake forms, AI workflows, and business process automation.'],
-    ['Security & Backup', 'MFA, endpoint hardening, backups, monitoring, and recovery planning.']
-  ]
-  const transcript = {
-    start: [
-      ['agent', 'Welcome to A1Tech Support. I can help you understand our services, report an issue, or start a new project.'],
-      ['agent', 'What would you like to do today?']
-    ],
-    services: [
-      ['agent', 'Welcome to A1Tech Support. I can help you understand our services, report an issue, or start a new project.'],
-      ['user', 'Show me what A1Tech can help with.'],
-      ['agent', 'Absolutely. Here are the most common ways we help clients. Tap a service to turn it into a request.']
-    ],
-    issue: [
-      ['agent', 'Welcome to A1Tech Support. I can help you understand our services, report an issue, or start a new project.'],
-      ['user', 'I need help with a problem.'],
-      ['agent', 'No problem. Tell us what is happening, who is affected, and how urgent it is.']
-    ],
-    handoff: [
-      ['agent', 'Welcome to A1Tech Support. I can help you understand our services, report an issue, or start a new project.'],
-      ['user', 'I am ready to contact A1Tech.'],
-      ['agent', 'Perfect. Choose how you want to send the request and we will route it to the right person.']
-    ]
-  } as const
-  return <main className="supportShell chatgptInspired">
-    <section className="supportConversation">
-      <div className="supportTopline">A1Tech mobile support experience</div>
-      <div className="promptBubble">End users should instantly see what A1Tech offers, request help, report a problem, or ask for new services — in a familiar iPhone-style conversation.</div>
-      <div className="responseCard">
-        <button className="editPill">✎ Edit</button>
-        <h2>Build a smooth support path</h2>
-        <p>Short messages, clear choices, and no technical jargon. Every tap should move the user closer to help.</p>
-        <ol><li>Pick a service or problem type.</li><li>Collect the minimum useful details.</li><li>Hand off to A1Tech with a clean summary.</li></ol>
-      </div>
-    </section>
-    <section className="phoneFrame polishedPhone">
-      <header><span className="statusDot"/><div><b>A1Tech Support</b><span>Typically replies in a few minutes</span></div></header>
-      <div className="phoneMessages">
-        {transcript[step].map(([role, text], index) => <div key={`${role}-${index}`} className={`bubble ${role}`}>{text}</div>)}
-        {step === 'start' && <div className="quickReplies"><button onClick={() => setStep('services')}>Explore services</button><button onClick={() => setStep('issue')}>Report a problem</button><button onClick={() => setStep('handoff')}>Contact A1Tech</button></div>}
-        {step === 'services' && <div className="mobileCards">{serviceCards.map(([title, body]) => <article key={title} onClick={() => setStep('handoff')}><b>{title}</b><p>{body}</p><span>Start request →</span></article>)}</div>}
-        {step === 'issue' && <div className="supportForm"><input placeholder="What is happening?"/><input placeholder="Who or what is affected?"/><select><option>Normal priority</option><option>High priority</option><option>Emergency</option></select><button onClick={() => setStep('handoff')}>Prepare support request</button></div>}
-        {step === 'handoff' && <div className="handoffCard"><b>Ready to send</b><p>A1Tech will receive a concise summary with contact info, affected service/device, priority, and requested next step.</p><div><button>Text</button><button>Email</button><button>Schedule</button></div></div>}
-      </div>
-      <footer><button onClick={() => setStep('services')}>Services</button><button onClick={() => setStep('issue')}>Problem</button><button onClick={() => setStep('handoff')}>Contact</button></footer>
-    </section>
-  </main>
 }
 
 function ToolMatrix({ contextActions, large = false, simplifyCards = true }: { contextActions: ContextActions; large?: boolean; simplifyCards?: boolean }) {
@@ -419,7 +393,6 @@ function BottomBar({ activeView, healthData, messages, selectedSession, sessionC
 }
 
 function ActiveView({ activeView, contextActions, messages, prefs, selectedSessionId, selectedTitle, sessionActions, setMessages, setPrefs, titleOverrides }: { activeView: View; contextActions: ContextActions; messages: ChatMessage[]; prefs: UiPrefs; selectedSessionId?: string; selectedTitle?: string; sessionActions: SessionActions; setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>; setPrefs: (prefs: UiPrefs) => void; titleOverrides: Record<string, string> }) {
-  if (activeView === 'support') return <SupportView />
   if (activeView === 'capabilities') return <CapabilityView contextActions={contextActions} prefs={prefs} />
   if (activeView === 'messaging') return <MessagingView contextActions={contextActions} selectedSessionId={selectedSessionId} sessionActions={sessionActions} titleOverrides={titleOverrides}/>
   if (activeView === 'artifacts') return <DataPanel contextActions={contextActions} title="Artifacts / Models" loader={models} icon={Box} simplifyCards={prefs.simplifyCards} />
@@ -441,7 +414,7 @@ function App() {
   const [sessionCount, setSessionCount] = useState(0)
   const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>(() => JSON.parse(localStorage.getItem('hermes-webgui:title-overrides') || '{}'))
 
-  useEffect(() => { localStorage.setItem('hermes-webgui:prefs', JSON.stringify(prefs)); document.documentElement.style.setProperty('--accent', prefs.accent); document.documentElement.style.setProperty('--font-scale', String(prefs.fontScale)) }, [prefs])
+  useEffect(() => { localStorage.setItem('hermes-webgui:prefs', JSON.stringify(prefs)); document.documentElement.style.setProperty('--accent', prefs.accent); document.documentElement.style.setProperty('--assistant-bubble', prefs.assistantBubble); document.documentElement.style.setProperty('--font-scale', String(prefs.fontScale)); document.documentElement.style.setProperty('--user-bubble', prefs.userBubble) }, [prefs])
   useEffect(() => { localStorage.setItem('hermes-webgui:pinned', JSON.stringify(pinnedIds)) }, [pinnedIds])
   useEffect(() => { localStorage.setItem('hermes-webgui:title-overrides', JSON.stringify(titleOverrides)) }, [titleOverrides])
   useEffect(() => { health().then(setHealthData).catch(() => setHealthData(null)); sessions().then(data => setSessionCount(asList(data).length)).catch(() => undefined) }, [])
