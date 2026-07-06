@@ -74,7 +74,7 @@ type SessionActions = {
   renameSession: (session: SessionSummary) => void
 }
 
-const defaultPrefs: UiPrefs = { accent: '#8eb7ff', density: 'cozy', fontScale: 1, showRightRail: true, showToolMessages: false, simplifyCards: true }
+const defaultPrefs: UiPrefs = { accent: '#9b4238', density: 'cozy', fontScale: 1, showRightRail: true, showToolMessages: false, simplifyCards: true }
 const nav: Array<[View, string, IconType]> = [
   ['chat', 'New session', Plus],
   ['support', 'Mobile Support', MessageSquare],
