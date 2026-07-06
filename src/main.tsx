@@ -311,22 +311,55 @@ function SettingsView({ contextActions, prefs, setPrefs }: { contextActions: Con
 function SupportView() {
   const [step, setStep] = useState<'start' | 'issue' | 'services' | 'handoff'>('start')
   const serviceCards = [
-    ['Managed IT', 'Ongoing device, network, account, and user support.'],
-    ['Networking', 'Wi-Fi, routing, firewalls, remote access, and secure offices.'],
-    ['Automation', 'AI workflows, business automations, dashboards, and integrations.'],
-    ['Security', 'Backups, MFA, endpoint hardening, monitoring, and recovery planning.']
+    ['Managed IT', 'Help desk, devices, accounts, patching, and day-to-day support.'],
+    ['Network & Wi‑Fi', 'Reliable Wi‑Fi, firewalls, VPNs, remote access, and office networks.'],
+    ['Automation & AI', 'Dashboards, intake forms, AI workflows, and business process automation.'],
+    ['Security & Backup', 'MFA, endpoint hardening, backups, monitoring, and recovery planning.']
   ]
-  return <main className="supportShell"><section className="phoneFrame">
-    <header><b>A1Tech Support</b><span>online now</span></header>
-    <div className="phoneMessages">
-      <div className="bubble agent">Hi — I can help with support, new services, or an urgent problem. What do you need today?</div>
-      {step === 'start' && <div className="quickReplies"><button onClick={() => setStep('services')}>Show me services</button><button onClick={() => setStep('issue')}>Report a problem</button><button onClick={() => setStep('handoff')}>Talk to A1Tech</button></div>}
-      {step === 'services' && <><div className="bubble user">I want to see what A1Tech offers.</div><div className="bubble agent">Here are the most common ways we help. Pick one and we’ll turn it into a simple request.</div><div className="mobileCards">{serviceCards.map(([title, body]) => <article key={title}><b>{title}</b><p>{body}</p></article>)}</div></>}
-      {step === 'issue' && <><div className="bubble user">Something is broken and I need help.</div><div className="bubble agent">Got it. Send a short description, the affected user/device, and how urgent it is. We’ll route it to A1Tech.</div><div className="supportForm"><input placeholder="What is happening?"/><input placeholder="Who or what is affected?"/><select><option>Normal priority</option><option>High priority</option><option>Emergency</option></select><button onClick={() => setStep('handoff')}>Prepare support request</button></div></>}
-      {step === 'handoff' && <><div className="bubble user">I’m ready to contact A1Tech.</div><div className="bubble agent">Perfect — your request is ready. Next step: send it to A1Tech with your contact details and preferred callback method.</div><div className="quickReplies"><button>Text A1Tech</button><button>Email request</button><button>Schedule call</button></div></>}
-    </div>
-    <footer><button onClick={() => setStep('services')}>Services</button><button onClick={() => setStep('issue')}>Problem</button><button onClick={() => setStep('handoff')}>Contact</button></footer>
-  </section><section className="supportBrief"><h2>Mobile-first Support Experience</h2><p>This page is designed for your phone at <b>192.168.0.88</b>: short chat bubbles, clear actions, and a smooth path from “what do you offer?” to “I need help.”</p><ul><li>End-user friendly service discovery</li><li>Problem intake without technical jargon</li><li>Direct handoff to A1Tech for support or new work</li></ul></section></main>
+  const transcript = {
+    start: [
+      ['agent', 'Welcome to A1Tech Support. I can help you understand our services, report an issue, or start a new project.'],
+      ['agent', 'What would you like to do today?']
+    ],
+    services: [
+      ['agent', 'Welcome to A1Tech Support. I can help you understand our services, report an issue, or start a new project.'],
+      ['user', 'Show me what A1Tech can help with.'],
+      ['agent', 'Absolutely. Here are the most common ways we help clients. Tap a service to turn it into a request.']
+    ],
+    issue: [
+      ['agent', 'Welcome to A1Tech Support. I can help you understand our services, report an issue, or start a new project.'],
+      ['user', 'I need help with a problem.'],
+      ['agent', 'No problem. Tell us what is happening, who is affected, and how urgent it is.']
+    ],
+    handoff: [
+      ['agent', 'Welcome to A1Tech Support. I can help you understand our services, report an issue, or start a new project.'],
+      ['user', 'I am ready to contact A1Tech.'],
+      ['agent', 'Perfect. Choose how you want to send the request and we will route it to the right person.']
+    ]
+  } as const
+  return <main className="supportShell chatgptInspired">
+    <section className="supportConversation">
+      <div className="supportTopline">A1Tech mobile support experience</div>
+      <div className="promptBubble">End users should instantly see what A1Tech offers, request help, report a problem, or ask for new services — in a familiar iPhone-style conversation.</div>
+      <div className="responseCard">
+        <button className="editPill">✎ Edit</button>
+        <h2>Build a smooth support path</h2>
+        <p>Short messages, clear choices, and no technical jargon. Every tap should move the user closer to help.</p>
+        <ol><li>Pick a service or problem type.</li><li>Collect the minimum useful details.</li><li>Hand off to A1Tech with a clean summary.</li></ol>
+      </div>
+    </section>
+    <section className="phoneFrame polishedPhone">
+      <header><span className="statusDot"/><div><b>A1Tech Support</b><span>Typically replies in a few minutes</span></div></header>
+      <div className="phoneMessages">
+        {transcript[step].map(([role, text], index) => <div key={`${role}-${index}`} className={`bubble ${role}`}>{text}</div>)}
+        {step === 'start' && <div className="quickReplies"><button onClick={() => setStep('services')}>Explore services</button><button onClick={() => setStep('issue')}>Report a problem</button><button onClick={() => setStep('handoff')}>Contact A1Tech</button></div>}
+        {step === 'services' && <div className="mobileCards">{serviceCards.map(([title, body]) => <article key={title} onClick={() => setStep('handoff')}><b>{title}</b><p>{body}</p><span>Start request →</span></article>)}</div>}
+        {step === 'issue' && <div className="supportForm"><input placeholder="What is happening?"/><input placeholder="Who or what is affected?"/><select><option>Normal priority</option><option>High priority</option><option>Emergency</option></select><button onClick={() => setStep('handoff')}>Prepare support request</button></div>}
+        {step === 'handoff' && <div className="handoffCard"><b>Ready to send</b><p>A1Tech will receive a concise summary with contact info, affected service/device, priority, and requested next step.</p><div><button>Text</button><button>Email</button><button>Schedule</button></div></div>}
+      </div>
+      <footer><button onClick={() => setStep('services')}>Services</button><button onClick={() => setStep('issue')}>Problem</button><button onClick={() => setStep('handoff')}>Contact</button></footer>
+    </section>
+  </main>
 }
 
 function ToolMatrix({ contextActions, large = false, simplifyCards = true }: { contextActions: ContextActions; large?: boolean; simplifyCards?: boolean }) {
