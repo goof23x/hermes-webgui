@@ -11,6 +11,11 @@ export type SessionSummary = {
   name?: string | null
   message_count?: number
   tool_call_count?: number
+  input_tokens?: number
+  output_tokens?: number
+  reasoning_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
   last_active?: number
   started_at?: number
   ended_at?: number | null

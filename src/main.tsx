@@ -15,6 +15,7 @@ import {
   ExternalLink,
   FolderKanban,
   GitBranch,
+  Hash,
   Image,
   KeyRound,
   Layers,
@@ -31,7 +32,8 @@ import {
   Sparkles,
   Terminal as TerminalIcon,
   Trash2,
-  Wrench
+  Wrench,
+  Zap
 } from 'lucide-react'
 import { io } from 'socket.io-client'
 import { Terminal } from 'xterm'
@@ -87,6 +89,8 @@ const nav: Array<[View, string, IconType]> = [
 function asList(data: any): any[] { return data?.sessions || data?.items || data?.data || data?.skills || data?.toolsets || [] }
 function downloadText(name: string, content: string) { const url = URL.createObjectURL(new Blob([content], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url) }
 function formatClock(timestamp?: number) { if (!timestamp) return ''; return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp * 1000)) }
+function formatCompactNumber(value?: number) { if (!value) return '0'; return value >= 1000000 ? `${(value / 1000000).toFixed(1)}m` : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value) }
+function formatDuration(totalSeconds: number) { const minutes = Math.floor(totalSeconds / 60); const seconds = totalSeconds % 60; return `${minutes}:${String(seconds).padStart(2, '0')}` }
 function loadJson<T>(key: string, fallback: T): T { try { return { ...(fallback as any), ...JSON.parse(localStorage.getItem(key) || '{}') } } catch { return fallback } }
 function loadPrefs(): UiPrefs { return loadJson('hermes-webgui:prefs', defaultPrefs) }
 function messageVerb(role: string) { return role === 'user' ? 'sent' : role === 'assistant' ? 'received' : role }
@@ -336,8 +340,27 @@ function RightRail({ contextActions, prefs }: { contextActions: ContextActions; 
   return <aside className="rightRail"><StatusPanel contextActions={contextActions}/><ToolMatrix contextActions={contextActions} simplifyCards={prefs.simplifyCards}/><section className="panel quick"><div className="panelTitle"><KeyRound/> Desktop parity</div><ul><li>Click sessions to load timestamped conversations</li><li>Messaging and capabilities render friendly live summaries</li><li>Right-click session menu mirrors Desktop actions</li></ul></section><WebTerminal contextActions={contextActions}/></aside>
 }
 
-function BottomBar({ activeView, healthData, selectedSession, sessionCount, messages }: { activeView: View; healthData: Record<string, unknown> | null; selectedSession: SessionSummary | null; sessionCount: number; messages: ChatMessage[] }) {
-  return <footer><span><Activity size={14}/> Gateway {healthData?.hermesReachable ? 'ready' : 'checking'}</span><span><Bot size={14}/> Agents</span><span><Clock size={14}/> Cron</span><span><Layers size={14}/> {activeView}</span><span><MessageSquare size={14}/> Sessions {sessionCount || '—'}</span><span><GitBranch size={14}/> main</span><span><Monitor size={14}/> {selectedSession ? sessionTitle(selectedSession) : 'no session selected'}</span><span className="footerRight">{messages.length} visible messages</span></footer>
+function BottomBar({ activeView, healthData, messages, selectedSession, sessionCount, setActiveView, setPrefs, prefs }: { activeView: View; healthData: Record<string, unknown> | null; messages: ChatMessage[]; selectedSession: SessionSummary | null; sessionCount: number; setActiveView: (view: View) => void; setPrefs: (prefs: UiPrefs) => void; prefs: UiPrefs }) {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => { const started = Date.now(); const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000); return () => window.clearInterval(timer) }, [])
+  const usedTokens = (selectedSession?.input_tokens || 0) + (selectedSession?.output_tokens || 0) + (selectedSession?.reasoning_tokens || 0)
+  const tokenLimit = 272000
+  const tokenPercent = Math.min(100, Math.round((usedTokens / tokenLimit) * 100))
+  const version = String((healthData?.hermes as any)?.version || 'v0.18.0')
+  return <footer className="bottomBar">
+    <button title="Open Gateway/Capabilities" onClick={() => setActiveView('capabilities')}><Activity size={14}/> Gateway {healthData?.hermesReachable ? 'ready' : 'checking'}</button>
+    <button title="Open Messaging sessions" onClick={() => setActiveView('messaging')}><MessageSquare size={14}/> Sessions {sessionCount || '—'}</button>
+    <button title="Open Skills/Agents surface" onClick={() => setActiveView('skills')}><Bot size={14}/> Agents</button>
+    <button title="Open Settings/Toolsets" onClick={() => setActiveView('settings')}><Clock size={14}/> Cron</button>
+    <button className="tokenMeter" title="Approximate selected-session token usage" onClick={() => setActiveView('messaging')}><span>{formatCompactNumber(usedTokens)}/{formatCompactNumber(tokenLimit)}</span><i><b style={{ width: `${tokenPercent}%` }}/></i><span>{tokenPercent}%</span></button>
+    <button title="This page session elapsed time"><Clock size={14}/> Session {formatDuration(elapsed)}</button>
+    <button title="Toggle compact density" onClick={() => setPrefs({ ...prefs, density: prefs.density === 'compact' ? 'cozy' : 'compact' })}><Zap size={14}/> {prefs.density === 'compact' ? 'Compact' : 'Cozy'}</button>
+    <button title="Toggle web terminal/right rail" onClick={() => setPrefs({ ...prefs, showRightRail: !prefs.showRightRail })}><TerminalIcon size={14}/> Terminal</button>
+    <button title="Current view" onClick={() => setActiveView(activeView)}><Layers size={14}/> {activeView}</button>
+    <button title="Git branch placeholder"><GitBranch size={14}/> main</button>
+    <button title="Hermes version" onClick={() => window.open('https://github.com/NousResearch/hermes-agent', '_blank', 'noopener,noreferrer')}><Hash size={14}/> {version}</button>
+    <span className="footerRight"><Monitor size={14}/> {selectedSession ? sessionTitle(selectedSession) : `${messages.length} visible messages`}</span>
+  </footer>
 }
 
 function ActiveView({ activeView, contextActions, messages, prefs, selectedSessionId, selectedTitle, sessionActions, setMessages, setPrefs, titleOverrides }: { activeView: View; contextActions: ContextActions; messages: ChatMessage[]; prefs: UiPrefs; selectedSessionId?: string; selectedTitle?: string; sessionActions: SessionActions; setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>; setPrefs: (prefs: UiPrefs) => void; titleOverrides: Record<string, string> }) {
@@ -409,7 +432,7 @@ function App() {
     <ActiveView activeView={activeView} contextActions={contextActions} messages={messages} prefs={prefs} selectedSessionId={selectedSession ? sessionId(selectedSession) : undefined} selectedTitle={selectedSession ? sessionTitle(selectedSession, titleOverrides) : undefined} sessionActions={sessionActions} setMessages={setMessages} setPrefs={setPrefs} titleOverrides={titleOverrides}/>
     <RightRail contextActions={contextActions} prefs={prefs}/>
     <ContextMenuOverlay menu={menu} close={() => setMenu(null)}/>
-    <BottomBar activeView={activeView} healthData={healthData} selectedSession={selectedSession} sessionCount={sessionCount} messages={messages}/>
+    <BottomBar activeView={activeView} healthData={healthData} selectedSession={selectedSession} sessionCount={sessionCount} messages={messages} setActiveView={setActiveView} setPrefs={setPrefs} prefs={prefs}/>
   </div>
 }
 
