@@ -49,6 +49,12 @@ export function sessionMessages(sessionId: string) { return api<Record<string, u
 export function skills() { return api<Record<string, unknown>>('/api/webgui/skills') }
 export function toolsetsApi() { return api<Record<string, unknown>>('/api/webgui/toolsets') }
 export async function createSession() { return api<Record<string, unknown>>('/api/webgui/sessions', { method: 'POST', body: '{}' }) }
+export async function sessionChat(sessionId: string, message: string) {
+  return api<{ session_id?: string; message?: ChatMessage; usage?: Record<string, number> }>(`/api/webgui/sessions/${encodeURIComponent(sessionId)}/chat`, {
+    method: 'POST',
+    body: JSON.stringify({ message })
+  })
+}
 export async function chat(messages: ChatMessage[], sessionId?: string) {
   const apiMessages = messages
     .filter(message => message.role !== 'tool')

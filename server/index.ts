@@ -111,6 +111,18 @@ app.post('/api/webgui/sessions', async (_req, res) => {
   }
 })
 
+app.post('/api/webgui/sessions/:sessionId/chat', async (req, res) => {
+  try {
+    const chat = await proxyHermes(`/api/sessions/${encodeURIComponent(req.params.sessionId)}/chat`, {
+      method: 'POST',
+      body: JSON.stringify(req.body ?? {})
+    })
+    res.status(chat.status).json(chat.body)
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+})
+
 app.post('/api/webgui/chat', async (req, res) => {
   const { messages, model = 'hermes-agent', sessionId } = req.body ?? {}
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages[] is required' })

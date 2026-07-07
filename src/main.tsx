@@ -42,10 +42,10 @@ import 'xterm/css/xterm.css'
 import './styles.css'
 import {
   capabilities,
-  chat,
   createSession,
   health,
   models,
+  sessionChat,
   sessionMessages,
   sessions,
   skills,
@@ -67,10 +67,12 @@ type SessionActions = {
   archiveSession: (session: SessionSummary) => void
   branchSession: (session: SessionSummary) => void
   deleteSession: (session: SessionSummary) => void
+  ensureSession: () => Promise<string>
   exportSession: (session: SessionSummary) => void
   openSession: (session: SessionSummary) => void
   openSessionWindow: (session: SessionSummary) => void
   pinSession: (session: SessionSummary) => void
+  refreshSessionMessages: (sessionId: string) => Promise<void>
   renameSession: (session: SessionSummary) => void
 }
 
@@ -86,7 +88,7 @@ const nav: Array<[View, string, IconType]> = [
   ['settings', 'Settings', Settings]
 ]
 
-function asList(data: any): any[] { return data?.sessions || data?.items || data?.data || data?.skills || data?.toolsets || [] }
+function asList(data: any): any[] { return data?.sessions || data?.messages || data?.items || data?.data || data?.skills || data?.toolsets || [] }
 function downloadText(name: string, content: string) { const url = URL.createObjectURL(new Blob([content], { type: 'application/json' })); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url) }
 function formatClock(timestamp?: number) { if (!timestamp) return ''; return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp * 1000)) }
 function formatCompactNumber(value?: number) { if (!value) return '0'; return value >= 1000000 ? `${(value / 1000000).toFixed(1)}m` : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value) }
@@ -192,7 +194,7 @@ function sessionMenu(session: SessionSummary, actions: SessionActions, contextAc
   ]
 }
 
-function Sidebar({ activeView, contextActions, pinnedIds, selectedSessionId, sessionActions, setActiveView, startNewSession, titleOverrides }: { activeView: View; contextActions: ContextActions; pinnedIds: string[]; selectedSessionId?: string; sessionActions: SessionActions; setActiveView: (view: View) => void; startNewSession: () => void; titleOverrides: Record<string, string> }) {
+function Sidebar({ activeView, contextActions, pinnedIds, selectedSessionId, sessionActions, sessionRefreshKey, setActiveView, startNewSession, titleOverrides }: { activeView: View; contextActions: ContextActions; pinnedIds: string[]; selectedSessionId?: string; sessionActions: SessionActions; sessionRefreshKey: number; setActiveView: (view: View) => void; startNewSession: () => void; titleOverrides: Record<string, string> }) {
   return <aside className="sidebar" onContextMenu={event => contextActions.openMenu(event, 'Sidebar', [
     { icon: Plus, label: 'New session', onSelect: startNewSession },
     { icon: Brain, label: 'Open Capabilities', onSelect: () => setActiveView('capabilities') },
@@ -201,12 +203,12 @@ function Sidebar({ activeView, contextActions, pinnedIds, selectedSessionId, ses
     <div className="brand"><Bot size={28}/><div><b>Hermes WebGUI</b><span>desktop parity browser shell</span></div></div>
     <div className="nav">{nav.map(([view, name, Icon]) => <button key={view} className={activeView === view ? 'active' : ''} onClick={() => view === 'chat' ? startNewSession() : setActiveView(view)}><Icon size={18}/>{name}</button>)}</div>
     <label className="search"><Search size={16}/><input placeholder="Search sessions..." onFocus={() => setActiveView('chat')} /></label>
-    <SessionList contextActions={contextActions} pinnedIds={pinnedIds} selectedSessionId={selectedSessionId} sessionActions={sessionActions} titleOverrides={titleOverrides}/>
+    <SessionList contextActions={contextActions} pinnedIds={pinnedIds} selectedSessionId={selectedSessionId} sessionActions={sessionActions} sessionRefreshKey={sessionRefreshKey} titleOverrides={titleOverrides}/>
   </aside>
 }
 
-function SessionList({ contextActions, pinnedIds, selectedSessionId, sessionActions, titleOverrides }: { contextActions: ContextActions; pinnedIds: string[]; selectedSessionId?: string; sessionActions: SessionActions; titleOverrides: Record<string, string> }) {
-  const { data, error } = useJsonLoader(sessions, [])
+function SessionList({ contextActions, pinnedIds, selectedSessionId, sessionActions, sessionRefreshKey, titleOverrides }: { contextActions: ContextActions; pinnedIds: string[]; selectedSessionId?: string; sessionActions: SessionActions; sessionRefreshKey: number; titleOverrides: Record<string, string> }) {
+  const { data, error } = useJsonLoader(sessions, [sessionRefreshKey])
   const items = asList(data) as SessionSummary[]
   const pinned = items.filter(session => pinnedIds.includes(sessionId(session)))
   return <section>
@@ -227,7 +229,7 @@ function SessionButton({ contextActions, selectedSessionId, session, sessionActi
   </button>
 }
 
-function ChatPane({ contextActions, messages, selectedTitle, setMessages }: { contextActions: ContextActions; messages: ChatMessage[]; selectedTitle?: string; setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> }) {
+function ChatPane({ contextActions, ensureSession, messages, refreshSessionMessages, selectedSessionId, selectedTitle, setMessages }: { contextActions: ContextActions; ensureSession: () => Promise<string>; messages: ChatMessage[]; refreshSessionMessages: (sessionId: string) => Promise<void>; selectedSessionId?: string; selectedTitle?: string; setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> }) {
   const [attachments, setAttachments] = useState<NonNullable<ChatMessage['attachments']>>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -255,9 +257,11 @@ function ChatPane({ contextActions, messages, selectedTitle, setMessages }: { co
     const next = [...messages, { role: 'user' as const, content: `${input.trim() || 'Attached files for review.'}${attachNote}`, timestamp: now, attachments }]
     setMessages(next); setInput(''); setAttachments([]); setBusy(true)
     try {
-      const res = await chat(next)
-      const reply = res.choices?.[0]?.message || { role: 'assistant' as const, content: JSON.stringify(res, null, 2) }
+      const targetSessionId = selectedSessionId || await ensureSession()
+      const res = await sessionChat(targetSessionId, `${input.trim() || 'Attached files for review.'}${attachNote}`)
+      const reply = res.message || { role: 'assistant' as const, content: JSON.stringify(res, null, 2) }
       setMessages([...next, { ...reply, timestamp: Date.now() / 1000 }])
+      await refreshSessionMessages(res.session_id || targetSessionId)
     } catch (error) {
       setMessages([...next, { role: 'assistant', content: `Hermes API error: ${error instanceof Error ? error.message : String(error)}`, timestamp: Date.now() / 1000 }])
     } finally { setBusy(false) }
@@ -484,7 +488,7 @@ function ActiveView({ activeView, contextActions, messages, prefs, selectedSessi
   if (activeView === 'memory') return <MemoryView contextActions={contextActions} prefs={prefs} />
   if (activeView === 'skills') return <SkillsView contextActions={contextActions} prefs={prefs} />
   if (activeView === 'settings') return <SettingsView contextActions={contextActions} prefs={prefs} setPrefs={setPrefs} />
-  return <ChatPane contextActions={contextActions} messages={messages} selectedTitle={selectedTitle} setMessages={setMessages} />
+  return <ChatPane contextActions={contextActions} ensureSession={sessionActions.ensureSession} messages={messages} refreshSessionMessages={sessionActions.refreshSessionMessages} selectedSessionId={selectedSessionId} selectedTitle={selectedTitle} setMessages={setMessages} />
 }
 
 function App() {
@@ -495,6 +499,7 @@ function App() {
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => JSON.parse(localStorage.getItem('hermes-webgui:pinned') || '[]'))
   const [prefs, setPrefsState] = useState<UiPrefs>(loadPrefs)
   const [selectedSession, setSelectedSession] = useState<SessionSummary | null>(null)
+  const [sessionRefreshKey, setSessionRefreshKey] = useState(0)
   const [sessionCount, setSessionCount] = useState(0)
   const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>(() => JSON.parse(localStorage.getItem('hermes-webgui:title-overrides') || '{}'))
 
@@ -507,6 +512,25 @@ function App() {
   function setPrefs(next: UiPrefs) { setPrefsState(next) }
   const contextActions: ContextActions = { copyText, openMenu: (event, title, items) => { event.preventDefault(); event.stopPropagation(); setMenu({ items, title, x: event.clientX, y: event.clientY }) } }
 
+  async function refreshSessionMessages(sessionId: string) {
+    const response = await sessionMessages(sessionId)
+    const records = asList(response) as SessionMessageRecord[]
+    setMessages(normalizeMessages(records, prefs.showToolMessages))
+    setSessionRefreshKey(key => key + 1)
+  }
+
+  async function ensureSession() {
+    if (selectedSession) return sessionId(selectedSession)
+    const response = await createSession()
+    const session = ((response as any).session || response) as SessionSummary
+    const id = sessionId(session)
+    if (!id) throw new Error('Hermes API did not return a session id')
+    setSelectedSession(session)
+    setSessionCount(count => Math.max(count, 0) + 1)
+    setSessionRefreshKey(key => key + 1)
+    return id
+  }
+
   async function openSession(session: SessionSummary) {
     const id = sessionId(session)
     if (!id) return
@@ -514,9 +538,7 @@ function App() {
     setSelectedSession(session)
     setMessages([{ role: 'assistant', content: `Loading conversation: ${sessionTitle(session, titleOverrides)}…`, timestamp: Date.now() / 1000 }])
     try {
-      const response = await sessionMessages(id)
-      const records = asList(response) as SessionMessageRecord[]
-      setMessages(normalizeMessages(records, prefs.showToolMessages))
+      await refreshSessionMessages(id)
     } catch (error) {
       setMessages([{ role: 'assistant', content: `Could not load session ${id}: ${error instanceof Error ? error.message : String(error)}`, timestamp: Date.now() / 1000 }])
     }
@@ -526,22 +548,33 @@ function App() {
     archiveSession: session => setMessages([{ role: 'assistant', content: `Archive requested for ${sessionTitle(session, titleOverrides)}. API support is pending; action recorded locally.`, timestamp: Date.now() / 1000 }]),
     branchSession: session => { const id = sessionId(session); window.open(`/?branch=${encodeURIComponent(id)}`, '_blank', 'noopener,noreferrer') },
     deleteSession: session => setMessages([{ role: 'assistant', content: `Delete requested for ${sessionTitle(session, titleOverrides)}. Destructive API support is pending; no remote deletion was performed.`, timestamp: Date.now() / 1000 }]),
+    ensureSession,
     exportSession: async session => { const id = sessionId(session); const response = await sessionMessages(id); downloadText(`${id || 'session'}.json`, shortJson(response, 1000000)) },
     openSession,
     openSessionWindow: session => window.open(`/?session=${encodeURIComponent(sessionId(session))}`, '_blank', 'noopener,noreferrer'),
     pinSession: session => setPinnedIds(ids => ids.includes(sessionId(session)) ? ids : [sessionId(session), ...ids]),
+    refreshSessionMessages,
     renameSession: session => { const id = sessionId(session); const next = window.prompt('Rename session locally', sessionTitle(session, titleOverrides)); if (next) setTitleOverrides(current => ({ ...current, [id]: next })) }
   }
 
   async function startNewSession() {
     setActiveView('chat')
-    setSelectedSession(null)
-    setMessages([{ role: 'assistant', content: 'Started a fresh local chat view. Hermes API session creation is available from the backend when you send a message.', timestamp: Date.now() / 1000 }])
-    createSession().catch(() => undefined)
+    setMessages([{ role: 'assistant', content: 'Starting a fresh Hermes session…', timestamp: Date.now() / 1000 }])
+    try {
+      const response = await createSession()
+      const session = ((response as any).session || response) as SessionSummary
+      setSelectedSession(session)
+      setSessionCount(count => Math.max(count, 0) + 1)
+      setSessionRefreshKey(key => key + 1)
+      setMessages([{ role: 'assistant', content: 'Fresh Hermes session ready. Messages sent here will be saved to Desktop history.', timestamp: Date.now() / 1000 }])
+    } catch (error) {
+      setSelectedSession(null)
+      setMessages([{ role: 'assistant', content: `Could not create a Hermes session yet: ${error instanceof Error ? error.message : String(error)}`, timestamp: Date.now() / 1000 }])
+    }
   }
 
   return <div className={`app density-${prefs.density} ${prefs.showRightRail ? '' : 'noRightRail'}`}>
-    <Sidebar activeView={activeView} contextActions={contextActions} pinnedIds={pinnedIds} selectedSessionId={selectedSession ? sessionId(selectedSession) : undefined} sessionActions={sessionActions} setActiveView={setActiveView} startNewSession={startNewSession} titleOverrides={titleOverrides}/>
+    <Sidebar activeView={activeView} contextActions={contextActions} pinnedIds={pinnedIds} selectedSessionId={selectedSession ? sessionId(selectedSession) : undefined} sessionActions={sessionActions} sessionRefreshKey={sessionRefreshKey} setActiveView={setActiveView} startNewSession={startNewSession} titleOverrides={titleOverrides}/>
     <ActiveView activeView={activeView} contextActions={contextActions} messages={messages} prefs={prefs} selectedSessionId={selectedSession ? sessionId(selectedSession) : undefined} selectedTitle={selectedSession ? sessionTitle(selectedSession, titleOverrides) : undefined} sessionActions={sessionActions} setMessages={setMessages} setPrefs={setPrefs} titleOverrides={titleOverrides}/>
     <RightRail contextActions={contextActions} prefs={prefs}/>
     <ContextMenuOverlay menu={menu} close={() => setMenu(null)}/>
