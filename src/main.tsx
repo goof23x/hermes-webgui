@@ -60,7 +60,7 @@ type View = 'chat' | 'capabilities' | 'messaging' | 'artifacts' | 'projects' | '
 type IconType = React.ComponentType<{ size?: number }>
 type ContextMenuItem = { destructive?: boolean; disabled?: boolean; icon?: IconType; label: string; onSelect: () => void; separatorBefore?: boolean }
 type ContextMenuState = { items: ContextMenuItem[]; title?: string; x: number; y: number } | null
-type UiPrefs = { accent: string; assistantBubble: string; density: 'cozy' | 'compact'; fontScale: number; showRightRail: boolean; showToolMessages: boolean; simplifyCards: boolean; userBubble: string }
+type UiPrefs = { accent: string; assistantBubble: string; density: 'cozy' | 'compact'; fontScale: number; showRightRail: boolean; showToolMessages: boolean; simplifyCards: boolean; themeVersion: number; userBubble: string }
 type ContextActions = { copyText: (text: string) => void; openMenu: (event: React.MouseEvent, title: string, items: ContextMenuItem[]) => void }
 
 type SessionActions = {
@@ -74,7 +74,7 @@ type SessionActions = {
   renameSession: (session: SessionSummary) => void
 }
 
-const defaultPrefs: UiPrefs = { accent: '#9b4238', assistantBubble: '#2b2b2b', density: 'cozy', fontScale: 1, showRightRail: true, showToolMessages: false, simplifyCards: true, userBubble: '#9b4238' }
+const defaultPrefs: UiPrefs = { accent: '#d66559', assistantBubble: '#000000', density: 'cozy', fontScale: 1, showRightRail: false, showToolMessages: false, simplifyCards: true, themeVersion: 2, userBubble: '#202123' }
 const nav: Array<[View, string, IconType]> = [
   ['chat', 'New session', Plus],
   ['capabilities', 'Capabilities', Brain],
@@ -92,7 +92,10 @@ function formatClock(timestamp?: number) { if (!timestamp) return ''; return new
 function formatCompactNumber(value?: number) { if (!value) return '0'; return value >= 1000000 ? `${(value / 1000000).toFixed(1)}m` : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value) }
 function formatDuration(totalSeconds: number) { const minutes = Math.floor(totalSeconds / 60); const seconds = totalSeconds % 60; return `${minutes}:${String(seconds).padStart(2, '0')}` }
 function loadJson<T>(key: string, fallback: T): T { try { return { ...(fallback as any), ...JSON.parse(localStorage.getItem(key) || '{}') } } catch { return fallback } }
-function loadPrefs(): UiPrefs { return loadJson('hermes-webgui:prefs', defaultPrefs) }
+function loadPrefs(): UiPrefs {
+  const prefs = loadJson('hermes-webgui:prefs', defaultPrefs)
+  return prefs.themeVersion === defaultPrefs.themeVersion ? prefs : { ...defaultPrefs, density: prefs.density || defaultPrefs.density, fontScale: prefs.fontScale || defaultPrefs.fontScale, showToolMessages: !!prefs.showToolMessages, simplifyCards: prefs.simplifyCards ?? defaultPrefs.simplifyCards }
+}
 function messageVerb(role: string) { return role === 'user' ? 'sent' : role === 'assistant' ? 'received' : role }
 function sessionId(session: SessionSummary) { return String(session.id || session.session_id || '') }
 function sessionTitle(session: SessionSummary, titleOverrides: Record<string, string> = {}) { const id = sessionId(session); return titleOverrides[id] || session.title || session.name || session.id || session.session_id || 'Untitled' }
@@ -216,6 +219,7 @@ function ChatPane({ contextActions, messages, selectedTitle, setMessages }: { co
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [modelMode, setModelMode] = useState<'general' | 'vision' | 'audio'>('general')
+  const isEmpty = messages.length <= 1 && messages[0]?.role === 'assistant' && /ready|fresh local chat/i.test(messages[0]?.content || '')
 
   function attachFiles(files: FileList | null) {
     if (!files?.length) return
@@ -249,8 +253,8 @@ function ChatPane({ contextActions, messages, selectedTitle, setMessages }: { co
     { icon: Copy, label: 'Copy transcript', onSelect: () => contextActions.copyText(messages.map(message => `${message.role} ${formatClock(message.timestamp)}: ${message.content}`).join('\n\n')) },
     { icon: Trash2, label: 'Clear local chat', destructive: true, separatorBefore: true, onSelect: () => setMessages([{ role: 'assistant', content: 'Local chat cleared.', timestamp: Date.now() / 1000 }]) }
   ])}>
-    {messages.length <= 1 && <div className="hero"><h1>HERMES AGENT</h1><p>{selectedTitle ? `loaded: ${selectedTitle}` : 'one task at a time, now in a web browser'}</p></div>}
-    <div className="messages chatReadable">{messages.map((message, index) => <article key={index} className={`msg ${message.role}`} onContextMenu={event => contextActions.openMenu(event, `${message.role} message`, [
+    {isEmpty && <div className="emptyState"><h1>What’s on your mind today?</h1><div className="quickPrompts"><button onClick={() => setInput('Use the best Hermes tool for this task: ')}><Wrench size={16}/> Use a Hermes tool</button><button onClick={() => setInput('Create or edit an image: ')}><Image size={16}/> Create an image</button><button onClick={() => setInput('Search the web for: ')}><Search size={16}/> Look something up</button></div></div>}
+    <div className={`messages chatReadable ${isEmpty ? 'isEmpty' : ''}`}>{!isEmpty && messages.map((message, index) => <article key={index} className={`msg ${message.role}`} onContextMenu={event => contextActions.openMenu(event, `${message.role} message`, [
       { icon: Copy, label: 'Copy message', onSelect: () => contextActions.copyText(message.content) },
       { icon: Copy, label: 'Copy role + message', onSelect: () => contextActions.copyText(`${message.role}: ${message.content}`) },
       { icon: Clock, label: 'Copy timestamp', disabled: !message.timestamp, onSelect: () => contextActions.copyText(formatClock(message.timestamp)) }
