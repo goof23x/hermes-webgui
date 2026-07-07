@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   Archive,
@@ -91,6 +91,19 @@ function downloadText(name: string, content: string) { const url = URL.createObj
 function formatClock(timestamp?: number) { if (!timestamp) return ''; return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp * 1000)) }
 function formatCompactNumber(value?: number) { if (!value) return '0'; return value >= 1000000 ? `${(value / 1000000).toFixed(1)}m` : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value) }
 function formatDuration(totalSeconds: number) { const minutes = Math.floor(totalSeconds / 60); const seconds = totalSeconds % 60; return `${minutes}:${String(seconds).padStart(2, '0')}` }
+function sessionActivity(session: SessionSummary) { return session.last_active || session.started_at || 0 }
+function sessionBucket(session: SessionSummary) {
+  const ts = sessionActivity(session)
+  if (!ts) return 'Older'
+  const days = Math.floor((Date.now() / 1000 - ts) / 86400)
+  if (days <= 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  if (days < 7) return 'Previous 7 days'
+  if (days < 30) return 'Previous 30 days'
+  return 'Older'
+}
+function readableId(id?: string) { if (!id) return 'No ID'; return id.length > 14 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id }
+function pickPreview(session: SessionSummary) { return session.preview || session.model || session.source || 'Continue this Hermes conversation.' }
 function loadJson<T>(key: string, fallback: T): T { try { return { ...(fallback as any), ...JSON.parse(localStorage.getItem(key) || '{}') } } catch { return fallback } }
 function loadPrefs(): UiPrefs {
   const prefs = loadJson('hermes-webgui:prefs', defaultPrefs)
@@ -219,7 +232,9 @@ function ChatPane({ contextActions, messages, selectedTitle, setMessages }: { co
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [modelMode, setModelMode] = useState<'general' | 'vision' | 'audio'>('general')
+  const bottomRef = useRef<HTMLDivElement | null>(null)
   const isEmpty = messages.length <= 1 && messages[0]?.role === 'assistant' && /ready|fresh local chat/i.test(messages[0]?.content || '')
+  useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }) }, [messages.length, busy, selectedTitle])
 
   function attachFiles(files: FileList | null) {
     if (!files?.length) return
@@ -254,7 +269,7 @@ function ChatPane({ contextActions, messages, selectedTitle, setMessages }: { co
     { icon: Trash2, label: 'Clear local chat', destructive: true, separatorBefore: true, onSelect: () => setMessages([{ role: 'assistant', content: 'Local chat cleared.', timestamp: Date.now() / 1000 }]) }
   ])}>
     {isEmpty && <div className="emptyState"><h1>What’s on your mind today?</h1><div className="quickPrompts"><button onClick={() => setInput('Use the best Hermes tool for this task: ')}><Wrench size={16}/> Use a Hermes tool</button><button onClick={() => setInput('Create or edit an image: ')}><Image size={16}/> Create an image</button><button onClick={() => setInput('Search the web for: ')}><Search size={16}/> Look something up</button></div></div>}
-    <div className={`messages chatReadable ${isEmpty ? 'isEmpty' : ''}`}>{!isEmpty && messages.map((message, index) => <article key={index} className={`msg ${message.role}`} onContextMenu={event => contextActions.openMenu(event, `${message.role} message`, [
+    <div className={`messages chatReadable ${isEmpty ? 'isEmpty' : ''}`}>{!isEmpty && messages.map((message, index) => <article key={index} className={`msg ${message.role} ${index === messages.length - 1 ? 'latest' : ''}`} onContextMenu={event => contextActions.openMenu(event, `${message.role} message`, [
       { icon: Copy, label: 'Copy message', onSelect: () => contextActions.copyText(message.content) },
       { icon: Copy, label: 'Copy role + message', onSelect: () => contextActions.copyText(`${message.role}: ${message.content}`) },
       { icon: Clock, label: 'Copy timestamp', disabled: !message.timestamp, onSelect: () => contextActions.copyText(formatClock(message.timestamp)) }
@@ -262,7 +277,7 @@ function ChatPane({ contextActions, messages, selectedTitle, setMessages }: { co
       <div className="msgHeader"><b>{message.role}</b><span>{message.timestamp ? `${messageVerb(message.role)} ${formatClock(message.timestamp)}` : 'time unavailable'}</span></div>
       <pre>{message.content}</pre>
       {!!message.attachments?.length && <div className="attachmentPreview">{message.attachments.map(file => <div key={file.url} className="attachmentCard"><span>{file.kind === 'image' ? 'Image' : file.kind === 'audio' ? 'Audio' : 'File'}</span>{file.kind === 'image' && <img src={file.url} alt={file.name}/>} {file.kind === 'audio' && <audio src={file.url} controls/>}<b>{file.name}</b><small>{file.modelHint}</small></div>)}</div>}
-    </article>)}</div>
+    </article>)}<div ref={bottomRef} className="chatEnd" aria-hidden="true"/></div>
     <div className="composer chatgptComposer">
       <input id="chat-file-input" type="file" multiple accept="image/*,audio/*,.txt,.md,.pdf,.csv,.json" onChange={event => attachFiles(event.currentTarget.files)} hidden />
       <button title="Attach image/audio/file" onClick={() => document.getElementById('chat-file-input')?.click()}><Plus size={20}/></button>
@@ -318,6 +333,50 @@ function DataPanel({ contextActions, title, loader, icon: Icon, empty = 'No reco
     <div className="pageTitle"><Icon size={24}/><h2>{title}</h2></div>{loading && <p className="muted">Loading…</p>}{error && <p className="warn">{error}</p>}
     {rows.length ? <div className="recordGrid">{rows.slice(0, 60).map((row: any, index) => <article key={row.id || row.name || index}><b>{row.label || row.name || row.id || row.title || `Item ${index + 1}`}</b>{simplifyCards ? <p>{row.description || row.source || row.model || `${Object.keys(row).length} fields`}</p> : <pre>{shortJson(row, 700)}</pre>}</article>)}</div> : <p className="muted">{empty}</p>}
     <details><summary>Raw API response</summary><pre className="raw">{shortJson(data || error || {}, 8000)}</pre></details>
+  </section></main>
+}
+
+function ProjectsView({ contextActions, selectedSessionId, sessionActions, titleOverrides }: { contextActions: ContextActions; selectedSessionId?: string; sessionActions: SessionActions; titleOverrides: Record<string, string> }) {
+  const { data, error, loading } = useJsonLoader(sessions, [])
+  const items = (asList(data) as SessionSummary[]).sort((a, b) => sessionActivity(b) - sessionActivity(a))
+  const buckets = ['Today', 'Yesterday', 'Previous 7 days', 'Previous 30 days', 'Older']
+  return <main className="workspace"><section className="widePanel refinedPage projectsPage">
+    <div className="pageTitle"><FolderKanban size={24}/><div><h2>Projects & chats</h2><p>Recent Hermes work, grouped like a clean chat history. Open one to continue from the latest message.</p></div></div>
+    {loading && <p className="muted">Loading…</p>}{error && <p className="warn">{error}</p>}
+    <div className="projectStats"><article><b>{items.length}</b><span>Total chats</span></article><article><b>{items.filter(s => sessionBucket(s) === 'Today').length}</b><span>Today</span></article><article><b>{items.reduce((sum, s) => sum + (s.message_count || 0), 0)}</b><span>Messages</span></article></div>
+    <div className="historyGroups">{buckets.map(bucket => {
+      const group = items.filter(session => sessionBucket(session) === bucket)
+      if (!group.length) return null
+      return <section key={bucket}><h3>{bucket}</h3><div className="historyList">{group.slice(0, 18).map(session => {
+        const id = sessionId(session)
+        return <button key={id} className={selectedSessionId === id ? 'selected' : ''} onClick={() => sessionActions.openSession(session)} onContextMenu={event => contextActions.openMenu(event, sessionTitle(session, titleOverrides), sessionMenu(session, sessionActions, contextActions, titleOverrides))}>
+          <div><b>{sessionTitle(session, titleOverrides)}</b><p>{pickPreview(session)}</p></div><span>{formatClock(sessionActivity(session)) || readableId(id)}</span>
+        </button>
+      })}</div></section>
+    })}</div>
+  </section></main>
+}
+
+function ArtifactsView({ contextActions }: { contextActions: ContextActions }) {
+  const { data, error, loading } = useJsonLoader(models, [])
+  const rows = asList(data)
+  return <main className="workspace"><section className="widePanel refinedPage artifactsPage" onContextMenu={event => contextActions.openMenu(event, 'Artifacts', [{ icon: Copy, label: 'Copy models JSON', onSelect: () => contextActions.copyText(shortJson(data || error || {}, 20000)) }])}>
+    <div className="pageTitle"><Box size={24}/><div><h2>Artifacts & model output</h2><p>A friendlier place for generated files, images, audio, and model capabilities.</p></div></div>
+    {loading && <p className="muted">Loading…</p>}{error && <p className="warn">{error}</p>}
+    <div className="artifactHero"><article><Image size={22}/><b>Images</b><span>Attach or generate visuals from chat.</span></article><article><Mic size={22}/><b>Audio</b><span>Attach voice clips or route to audio models.</span></article><article><Code2 size={22}/><b>Files</b><span>Keep code, documents, and exports organized.</span></article></div>
+    <h3>AVAILABLE MODELS {rows.length || ''}</h3><div className="recordGrid polishedRecords">{rows.slice(0, 48).map((row: any, index) => <article key={row.id || row.name || index}><b>{row.label || row.name || row.id || `Model ${index + 1}`}</b><p>{row.description || row.owned_by || row.provider || 'Model available through Hermes.'}</p><small>{row.id || row.name || 'model'}</small></article>)}</div>
+  </section></main>
+}
+
+function MemoryView({ contextActions, prefs }: { contextActions: ContextActions; prefs: UiPrefs }) {
+  const caps = useJsonLoader(capabilities, [])
+  const skillData = useJsonLoader(skills, [])
+  const skillRows = asList(skillData.data)
+  return <main className="workspace"><section className="widePanel refinedPage memoryPage" onContextMenu={event => contextActions.openMenu(event, 'Memory', [{ icon: Copy, label: 'Copy memory summary', onSelect: () => contextActions.copyText(shortJson({ capabilities: caps.data, skills: skillData.data }, 20000)) }])}>
+    <div className="pageTitle"><Sparkles size={24}/><div><h2>Memory</h2><p>What Hermes can remember, reuse, and turn into repeatable workflows.</p></div></div>
+    {(caps.loading || skillData.loading) && <p className="muted">Loading…</p>}{(caps.error || skillData.error) && <p className="warn">{caps.error || skillData.error}</p>}
+    <div className="memoryTiles"><article><Brain size={22}/><b>User memory</b><span>Durable preferences and environment facts stay compact and reusable.</span></article><article><Wrench size={22}/><b>{skillRows.length || '—'} skills</b><span>Reusable playbooks Hermes can load for repeat tasks.</span></article><article><Database size={22}/><b>{String((caps.data?.features as any)?.tools ? 'Enabled' : 'Available')}</b><span>Tool and memory surfaces are reachable from this WebGUI.</span></article></div>
+    <h3>RECENT PLAYBOOKS</h3><div className="skillList compactSkills">{skillRows.slice(0, 12).map((row: any, index) => { const rawName = row.name || row.id || `skill-${index + 1}`; return <article key={rawName}><div><b>{friendlySkillName(rawName)}</b><small>{rawName}</small></div><p>{row.description || 'Reusable Hermes workflow.'}</p></article> })}</div>
   </section></main>
 }
 
@@ -406,19 +465,13 @@ function BottomBar({ activeView, healthData, messages, selectedSession, sessionC
   const usedTokens = (selectedSession?.input_tokens || 0) + (selectedSession?.output_tokens || 0) + (selectedSession?.reasoning_tokens || 0)
   const tokenLimit = 272000
   const tokenPercent = Math.min(100, Math.round((usedTokens / tokenLimit) * 100))
-  const version = String((healthData?.hermes as any)?.version || 'v0.18.0')
-  return <footer className="bottomBar">
-    <button title="Open Gateway/Capabilities" onClick={() => setActiveView('capabilities')}><Activity size={14}/> Gateway {healthData?.hermesReachable ? 'ready' : 'checking'}</button>
-    <button title="Open Messaging sessions" onClick={() => setActiveView('messaging')}><MessageSquare size={14}/> Sessions {sessionCount || '—'}</button>
-    <button title="Open Skills/Agents surface" onClick={() => setActiveView('skills')}><Bot size={14}/> Agents</button>
-    <button title="Open Settings/Toolsets" onClick={() => setActiveView('settings')}><Clock size={14}/> Cron</button>
-    <button className="tokenMeter" title="Approximate selected-session token usage" onClick={() => setActiveView('messaging')}><span>{formatCompactNumber(usedTokens)}/{formatCompactNumber(tokenLimit)}</span><i><b style={{ width: `${tokenPercent}%` }}/></i><span>{tokenPercent}%</span></button>
-    <button title="This page session elapsed time"><Clock size={14}/> Session {formatDuration(elapsed)}</button>
-    <button title="Toggle compact density" onClick={() => setPrefs({ ...prefs, density: prefs.density === 'compact' ? 'cozy' : 'compact' })}><Zap size={14}/> {prefs.density === 'compact' ? 'Compact' : 'Cozy'}</button>
-    <button title="Toggle web terminal/right rail" onClick={() => setPrefs({ ...prefs, showRightRail: !prefs.showRightRail })}><TerminalIcon size={14}/> Terminal</button>
-    <button title="Current view" onClick={() => setActiveView(activeView)}><Layers size={14}/> {activeView}</button>
-    <button title="Git branch placeholder"><GitBranch size={14}/> main</button>
-    <button title="Hermes version" onClick={() => window.open('https://github.com/NousResearch/hermes-agent', '_blank', 'noopener,noreferrer')}><Hash size={14}/> {version}</button>
+  const version = String((healthData?.hermes as any)?.version || 'Hermes')
+  const state = healthData?.hermesReachable ? 'Online' : 'Checking'
+  return <footer className="bottomBar proBar">
+    <div className="barGroup primaryStatus"><button title="Gateway health" onClick={() => setActiveView('capabilities')}><Circle size={10}/><b>{state}</b><span>Gateway</span></button><button title="Current view" onClick={() => setActiveView(activeView)}><Layers size={14}/><span>{activeView}</span></button></div>
+    <div className="barGroup navShortcuts"><button onClick={() => setActiveView('messaging')}><MessageSquare size={14}/> Chats <b>{sessionCount || '—'}</b></button><button onClick={() => setActiveView('projects')}><FolderKanban size={14}/> Projects</button><button onClick={() => setActiveView('artifacts')}><Box size={14}/> Artifacts</button><button onClick={() => setActiveView('memory')}><Sparkles size={14}/> Memory</button><button onClick={() => setActiveView('skills')}><Wrench size={14}/> Tools</button></div>
+    <button className="tokenMeter" title="Approximate selected-session token usage" onClick={() => setActiveView('messaging')}><span>{formatCompactNumber(usedTokens)}</span><i><b style={{ width: `${tokenPercent}%` }}/></i><span>{tokenPercent}%</span></button>
+    <div className="barGroup utility"><button title="Toggle compact density" onClick={() => setPrefs({ ...prefs, density: prefs.density === 'compact' ? 'cozy' : 'compact' })}><Zap size={14}/> {prefs.density === 'compact' ? 'Compact' : 'Cozy'}</button><button title="Toggle tools/terminal rail" onClick={() => setPrefs({ ...prefs, showRightRail: !prefs.showRightRail })}><TerminalIcon size={14}/> Rail</button><button title="Hermes version" onClick={() => window.open('https://github.com/NousResearch/hermes-agent', '_blank', 'noopener,noreferrer')}><Hash size={14}/> {version}</button><span><Clock size={14}/> {formatDuration(elapsed)}</span></div>
     <span className="footerRight"><Monitor size={14}/> {selectedSession ? sessionTitle(selectedSession) : `${messages.length} visible messages`}</span>
   </footer>
 }
@@ -426,9 +479,9 @@ function BottomBar({ activeView, healthData, messages, selectedSession, sessionC
 function ActiveView({ activeView, contextActions, messages, prefs, selectedSessionId, selectedTitle, sessionActions, setMessages, setPrefs, titleOverrides }: { activeView: View; contextActions: ContextActions; messages: ChatMessage[]; prefs: UiPrefs; selectedSessionId?: string; selectedTitle?: string; sessionActions: SessionActions; setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>; setPrefs: (prefs: UiPrefs) => void; titleOverrides: Record<string, string> }) {
   if (activeView === 'capabilities') return <CapabilityView contextActions={contextActions} prefs={prefs} />
   if (activeView === 'messaging') return <MessagingView contextActions={contextActions} selectedSessionId={selectedSessionId} sessionActions={sessionActions} titleOverrides={titleOverrides}/>
-  if (activeView === 'artifacts') return <DataPanel contextActions={contextActions} title="Artifacts / Models" loader={models} icon={Box} simplifyCards={prefs.simplifyCards} />
-  if (activeView === 'projects') return <DataPanel contextActions={contextActions} title="Projects / Sessions" loader={sessions} icon={FolderKanban} simplifyCards={prefs.simplifyCards} />
-  if (activeView === 'memory') return <DataPanel contextActions={contextActions} title="Memory / Capabilities" loader={capabilities} icon={Sparkles} simplifyCards={prefs.simplifyCards} />
+  if (activeView === 'artifacts') return <ArtifactsView contextActions={contextActions} />
+  if (activeView === 'projects') return <ProjectsView contextActions={contextActions} selectedSessionId={selectedSessionId} sessionActions={sessionActions} titleOverrides={titleOverrides} />
+  if (activeView === 'memory') return <MemoryView contextActions={contextActions} prefs={prefs} />
   if (activeView === 'skills') return <SkillsView contextActions={contextActions} prefs={prefs} />
   if (activeView === 'settings') return <SettingsView contextActions={contextActions} prefs={prefs} setPrefs={setPrefs} />
   return <ChatPane contextActions={contextActions} messages={messages} selectedTitle={selectedTitle} setMessages={setMessages} />
