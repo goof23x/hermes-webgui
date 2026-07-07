@@ -54,7 +54,7 @@ import {
   type SessionMessageRecord,
   type SessionSummary
 } from './api'
-import { toolCatalog, toolsets } from './toolCatalog'
+import { friendlySkillName, friendlyToolDescription, friendlyToolName, friendlyToolsetName, toolCatalog, toolsets } from './toolCatalog'
 
 type View = 'chat' | 'capabilities' | 'messaging' | 'artifacts' | 'projects' | 'memory' | 'skills' | 'settings'
 type IconType = React.ComponentType<{ size?: number }>
@@ -342,8 +342,35 @@ function SettingsView({ contextActions, prefs, setPrefs }: { contextActions: Con
 
 function ToolMatrix({ contextActions, large = false, simplifyCards = true }: { contextActions: ContextActions; large?: boolean; simplifyCards?: boolean }) {
   const [filter, setFilter] = useState('')
-  const filtered = useMemo(() => toolCatalog.filter(tool => `${tool.name} ${tool.toolset} ${tool.description}`.toLowerCase().includes(filter.toLowerCase())), [filter])
-  return <section className={`panel tools ${large ? 'large' : ''}`}><div className="panelTitle"><Wrench/> Tools <span>{filtered.length}/{toolCatalog.length}</span></div><input className="toolSearch" placeholder="Filter every Hermes tool..." value={filter} onChange={event => setFilter(event.target.value)} /><div className="chips">{toolsets.map(toolset => <button key={toolset} onClick={() => setFilter(toolset)}>{toolset}</button>)}</div><div className="toolGrid">{filtered.map(tool => <article key={tool.name} onContextMenu={event => contextActions.openMenu(event, tool.name, [{ icon: Copy, label: 'Copy tool name', onSelect: () => contextActions.copyText(tool.name) }, { icon: Copy, label: 'Copy tool JSON', onSelect: () => contextActions.copyText(shortJson(tool, 20000)) }, { icon: Search, label: `Filter ${tool.toolset}`, separatorBefore: true, onSelect: () => setFilter(tool.toolset) }])}><b>{tool.name}</b><small>{tool.toolset}</small><p>{tool.description}</p>{!simplifyCards && <pre>{shortJson(tool, 500)}</pre>}{tool.requires && <em>{tool.requires}</em>}</article>)}</div></section>
+  const filtered = useMemo(() => toolCatalog.filter(tool => `${friendlyToolName(tool.name)} ${tool.name} ${friendlyToolsetName(tool.toolset)} ${tool.description}`.toLowerCase().includes(filter.toLowerCase())), [filter])
+  const mostUseful = ['web_search', 'vision_analyze', 'image_generate', 'read_file', 'search_files', 'terminal', 'computer_use', 'delegate_task']
+  const featured = filtered.filter(tool => mostUseful.includes(tool.name))
+  const rest = filtered.filter(tool => !mostUseful.includes(tool.name))
+  const toolsToShow = filter ? filtered : [...featured, ...rest]
+  return <section className={`panel tools friendlyTools ${large ? 'large' : ''}`}>
+    <div className="panelTitle"><Wrench/> Tools <span>{filtered.length}/{toolCatalog.length}</span></div>
+    {large && <p className="toolIntro">Hermes tools are the things I can do for you — browse sites, use your desktop, read files, run commands, create images, remember preferences, and schedule work.</p>}
+    <input className="toolSearch" placeholder="Search by what you want to do…" value={filter} onChange={event => setFilter(event.target.value)} />
+    <div className="chips toolsetChips">{toolsets.map(toolset => <button key={toolset} onClick={() => setFilter(friendlyToolsetName(toolset))}>{friendlyToolsetName(toolset)}</button>)}</div>
+    {!filter && <h3>MOST USEFUL</h3>}
+    <div className="toolGrid">{toolsToShow.map(tool => <article key={tool.name} className={mostUseful.includes(tool.name) ? 'featuredTool' : ''} onContextMenu={event => contextActions.openMenu(event, friendlyToolName(tool.name), [{ icon: Copy, label: 'Copy tool name', onSelect: () => contextActions.copyText(tool.name) }, { icon: Copy, label: 'Copy tool JSON', onSelect: () => contextActions.copyText(shortJson(tool, 20000)) }, { icon: Search, label: `Show ${friendlyToolsetName(tool.toolset)}`, separatorBefore: true, onSelect: () => setFilter(friendlyToolsetName(tool.toolset)) }])}>
+      <b>{friendlyToolName(tool.name)}</b><small>{friendlyToolsetName(tool.toolset)}</small><p>{friendlyToolDescription(tool.name, tool.description)}</p><code>{tool.name}</code>{!simplifyCards && <pre>{shortJson(tool, 500)}</pre>}{tool.requires && <em>Needs {tool.requires}</em>}
+    </article>)}</div>
+  </section>
+}
+
+function SkillsView({ contextActions, prefs }: { contextActions: ContextActions; prefs: UiPrefs }) {
+  const { data, error, loading } = useJsonLoader(skills, [])
+  const rows = asList(data)
+  return <main className="workspace"><section className="widePanel friendlySkills" onContextMenu={event => contextActions.openMenu(event, 'Skills', [{ icon: Copy, label: 'Copy skills JSON', onSelect: () => contextActions.copyText(shortJson(data || error || {}, 20000)) }])}>
+    <div className="pageTitle"><Wrench size={24}/><h2>Skills</h2></div>
+    <p className="toolIntro">Skills are reusable playbooks Hermes can follow. Friendly names explain what each one helps with; the original skill name stays visible for power users.</p>
+    {loading && <p className="muted">Loading…</p>}{error && <p className="warn">{error}</p>}
+    <div className="skillList">{rows.slice(0, 80).map((row: any, index) => {
+      const rawName = row.name || row.id || row.title || `skill-${index + 1}`
+      return <article key={rawName}><div><b>{friendlySkillName(rawName)}</b><small>{row.category || row.domain || 'Hermes skill'} · <code>{rawName}</code></small></div><p>{row.description || row.summary || 'A reusable Hermes workflow for this kind of request.'}</p><button onClick={() => contextActions.copyText(rawName)}>Use name</button></article>
+    })}</div>
+  </section><ToolMatrix contextActions={contextActions} large simplifyCards={prefs.simplifyCards}/></main>
 }
 
 function StatusPanel({ contextActions, expanded = false }: { contextActions: ContextActions; expanded?: boolean }) {
@@ -402,7 +429,7 @@ function ActiveView({ activeView, contextActions, messages, prefs, selectedSessi
   if (activeView === 'artifacts') return <DataPanel contextActions={contextActions} title="Artifacts / Models" loader={models} icon={Box} simplifyCards={prefs.simplifyCards} />
   if (activeView === 'projects') return <DataPanel contextActions={contextActions} title="Projects / Sessions" loader={sessions} icon={FolderKanban} simplifyCards={prefs.simplifyCards} />
   if (activeView === 'memory') return <DataPanel contextActions={contextActions} title="Memory / Capabilities" loader={capabilities} icon={Sparkles} simplifyCards={prefs.simplifyCards} />
-  if (activeView === 'skills') return <DataPanel contextActions={contextActions} title="Skills" loader={skills} icon={Wrench} simplifyCards={prefs.simplifyCards} />
+  if (activeView === 'skills') return <SkillsView contextActions={contextActions} prefs={prefs} />
   if (activeView === 'settings') return <SettingsView contextActions={contextActions} prefs={prefs} setPrefs={setPrefs} />
   return <ChatPane contextActions={contextActions} messages={messages} selectedTitle={selectedTitle} setMessages={setMessages} />
 }
