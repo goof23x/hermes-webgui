@@ -45,12 +45,16 @@ import {
   createSession,
   health,
   models,
+  modes,
   sessionChat,
   sessionMessages,
   sessions,
   skills,
   toolsetsApi,
+  yolo,
+  setYolo,
   type ChatMessage,
+  type ModeOption,
   type SessionMessageRecord,
   type SessionSummary
 } from './api'
@@ -67,7 +71,7 @@ type SessionActions = {
   archiveSession: (session: SessionSummary) => void
   branchSession: (session: SessionSummary) => void
   deleteSession: (session: SessionSummary) => void
-  ensureSession: () => Promise<string>
+  ensureSession: (model?: string) => Promise<string>
   exportSession: (session: SessionSummary) => void
   openSession: (session: SessionSummary) => void
   openSessionWindow: (session: SessionSummary) => void
@@ -115,6 +119,14 @@ function messageVerb(role: string) { return role === 'user' ? 'sent' : role === 
 function sessionId(session: SessionSummary) { return String(session.id || session.session_id || '') }
 function sessionTitle(session: SessionSummary, titleOverrides: Record<string, string> = {}) { const id = sessionId(session); return titleOverrides[id] || session.title || session.name || session.id || session.session_id || 'Untitled' }
 function shortJson(value: unknown, max = 2400) { return JSON.stringify(value, null, 2).slice(0, max) }
+function fileToDataUrl(file: File) { return new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result || '')); reader.onerror = () => reject(reader.error || new Error('Could not read file')); reader.readAsDataURL(file) }) }
+function screenshotName(type = 'image/png') { const ext = type.includes('jpeg') || type.includes('jpg') ? 'jpg' : type.includes('webp') ? 'webp' : type.includes('gif') ? 'gif' : 'png'; return `pasted-screenshot-${new Date().toISOString().replace(/[:.]/g, '-')}.${ext}` }
+function messageTextFromContent(content: string | Array<Record<string, unknown>>) { return Array.isArray(content) ? String((content.find(part => part.type === 'text') as any)?.text || 'Attached image for review.') : content }
+function buildUserContent(text: string, attachments: NonNullable<ChatMessage['attachments']>) {
+  const prompt = text.trim() || (attachments.some(file => file.kind === 'image') ? 'Please analyze this screenshot.' : 'Attached files for review.')
+  const imageParts = attachments.filter(file => file.kind === 'image' && file.dataUrl).map(file => ({ type: 'image_url', image_url: { url: file.dataUrl, detail: 'high' }, name: file.name }))
+  return imageParts.length ? [{ type: 'text', text: prompt }, ...imageParts] : prompt
+}
 
 function normalizeMessages(records: SessionMessageRecord[], showToolMessages: boolean): ChatMessage[] {
   return records
@@ -229,36 +241,50 @@ function SessionButton({ contextActions, selectedSessionId, session, sessionActi
   </button>
 }
 
-function ChatPane({ contextActions, ensureSession, messages, refreshSessionMessages, selectedSessionId, selectedTitle, setMessages }: { contextActions: ContextActions; ensureSession: () => Promise<string>; messages: ChatMessage[]; refreshSessionMessages: (sessionId: string) => Promise<void>; selectedSessionId?: string; selectedTitle?: string; setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> }) {
+function ChatPane({ contextActions, ensureSession, messages, refreshSessionMessages, selectedSessionId, selectedTitle, setMessages }: { contextActions: ContextActions; ensureSession: (model?: string) => Promise<string>; messages: ChatMessage[]; refreshSessionMessages: (sessionId: string) => Promise<void>; selectedSessionId?: string; selectedTitle?: string; setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> }) {
   const [attachments, setAttachments] = useState<NonNullable<ChatMessage['attachments']>>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
-  const [modelMode, setModelMode] = useState<'general' | 'vision' | 'audio'>('general')
+  const modeData = useJsonLoader(modes, [])
+  const modeOptions = useMemo<ModeOption[]>(() => modeData.data?.modes?.length ? modeData.data.modes : [{ id: 'hermes-agent', label: 'Hermes Agent', source: 'default' }], [modeData.data])
+  const [selectedMode, setSelectedMode] = useState('hermes-agent')
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const isEmpty = messages.length <= 1 && messages[0]?.role === 'assistant' && /ready|fresh local chat/i.test(messages[0]?.content || '')
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'end' }) }, [messages.length, busy, selectedTitle])
 
-  function attachFiles(files: FileList | null) {
+  useEffect(() => { if (modeData.data?.current) setSelectedMode(modeData.data.current) }, [modeData.data?.current])
+
+  async function attachFiles(files: FileList | File[] | null) {
     if (!files?.length) return
-    const next: NonNullable<ChatMessage['attachments']> = Array.from(files).map(file => {
+    const next = await Promise.all(Array.from(files).map(async file => {
       const kind: 'image' | 'audio' | 'file' = file.type.startsWith('image/') ? 'image' : file.type.startsWith('audio/') ? 'audio' : 'file'
-      const modelHint = kind === 'image' ? 'vision/image model' : kind === 'audio' ? 'audio/transcription model' : 'general file context'
-      return { kind, modelHint, name: file.name, type: file.type || 'application/octet-stream', url: URL.createObjectURL(file) }
-    })
+      const modelHint = kind === 'image' ? 'screenshot / vision input' : kind === 'audio' ? 'audio/transcription input' : 'general file context'
+      const dataUrl = kind === 'image' ? await fileToDataUrl(file) : undefined
+      return { dataUrl, kind, modelHint, name: file.name || screenshotName(file.type), type: file.type || 'application/octet-stream', url: dataUrl || URL.createObjectURL(file) }
+    }))
     setAttachments(current => [...current, ...next])
-    if (next.some(file => file.kind === 'image')) setModelMode('vision')
-    else if (next.some(file => file.kind === 'audio')) setModelMode('audio')
+  }
+
+  async function attachClipboard(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const imageFiles = Array.from(event.clipboardData.files || []).filter(file => file.type.startsWith('image/'))
+    const imageItems = Array.from(event.clipboardData.items || []).filter(item => item.kind === 'file' && item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean) as File[]
+    const images = imageFiles.length ? imageFiles : imageItems
+    if (!images.length) return
+    event.preventDefault()
+    await attachFiles(images.map((file, index) => new File([file], file.name || screenshotName(file.type), { type: file.type || 'image/png', lastModified: Date.now() + index })))
   }
 
   async function submit() {
     if ((!input.trim() && !attachments?.length) || busy) return
     const now = Date.now() / 1000
+    const userContent = buildUserContent(input, attachments)
     const attachNote = attachments?.length ? `\n\nAttachments: ${attachments.map(file => `${file.name} (${file.modelHint})`).join(', ')}` : ''
-    const next = [...messages, { role: 'user' as const, content: `${input.trim() || 'Attached files for review.'}${attachNote}`, timestamp: now, attachments }]
+    const visibleText = `${messageTextFromContent(userContent)}${attachNote}`
+    const next = [...messages, { role: 'user' as const, content: visibleText, timestamp: now, attachments }]
     setMessages(next); setInput(''); setAttachments([]); setBusy(true)
     try {
-      const targetSessionId = selectedSessionId || await ensureSession()
-      const res = await sessionChat(targetSessionId, `${input.trim() || 'Attached files for review.'}${attachNote}`)
+      const targetSessionId = selectedSessionId || await ensureSession(selectedMode)
+      const res = await sessionChat(targetSessionId, userContent, selectedMode)
       const reply = res.message || { role: 'assistant' as const, content: JSON.stringify(res, null, 2) }
       setMessages([...next, { ...reply, timestamp: Date.now() / 1000 }])
       await refreshSessionMessages(res.session_id || targetSessionId)
@@ -283,12 +309,12 @@ function ChatPane({ contextActions, ensureSession, messages, refreshSessionMessa
       {!!message.attachments?.length && <div className="attachmentPreview">{message.attachments.map(file => <div key={file.url} className="attachmentCard"><span>{file.kind === 'image' ? 'Image' : file.kind === 'audio' ? 'Audio' : 'File'}</span>{file.kind === 'image' && <img src={file.url} alt={file.name}/>} {file.kind === 'audio' && <audio src={file.url} controls/>}<b>{file.name}</b><small>{file.modelHint}</small></div>)}</div>}
     </article>)}<div ref={bottomRef} className="chatEnd" aria-hidden="true"/></div>
     <div className="composer chatgptComposer">
-      <input id="chat-file-input" type="file" multiple accept="image/*,audio/*,.txt,.md,.pdf,.csv,.json" onChange={event => attachFiles(event.currentTarget.files)} hidden />
+      <input id="chat-file-input" type="file" multiple accept="image/*,audio/*,.txt,.md,.pdf,.csv,.json" onChange={event => { void attachFiles(event.currentTarget.files); event.currentTarget.value = '' }} hidden />
       <button title="Attach image/audio/file" onClick={() => document.getElementById('chat-file-input')?.click()}><Plus size={20}/></button>
       <div className="composerStack">
         {!!attachments?.length && <div className="pendingAttachments">{attachments.map(file => <button key={file.url} onClick={() => setAttachments(current => current?.filter(item => item.url !== file.url))}>{file.kind}: {file.name} · {file.modelHint} ×</button>)}</div>}
-        <textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit() } }} placeholder="Ask Hermes..."/>
-        <div className="composerMeta"><span>Mode</span><select value={modelMode} onChange={event => setModelMode(event.target.value as typeof modelMode)}><option value="general">General chat</option><option value="vision">Vision / images</option><option value="audio">Audio / voice</option></select></div>
+        <textarea value={input} onPaste={event => { void attachClipboard(event) }} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit() } }} placeholder="Ask Hermes, or paste a screenshot..."/>
+        <div className="composerMeta"><span>Mode</span><select value={selectedMode} onChange={event => setSelectedMode(event.target.value)}>{modeOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select>{modeData.error && <em>{modeData.error}</em>}</div>
       </div>
       <button aria-label="Send" onClick={submit} disabled={busy}><Send size={20}/></button>
     </div>
@@ -463,7 +489,7 @@ function RightRail({ contextActions, prefs }: { contextActions: ContextActions; 
   return <aside className="rightRail"><StatusPanel contextActions={contextActions}/><ToolMatrix contextActions={contextActions} simplifyCards={prefs.simplifyCards}/><section className="panel quick"><div className="panelTitle"><KeyRound/> Desktop parity</div><ul><li>Click sessions to load timestamped conversations</li><li>Messaging and capabilities render friendly live summaries</li><li>Right-click session menu mirrors Desktop actions</li></ul></section><WebTerminal contextActions={contextActions}/></aside>
 }
 
-function BottomBar({ activeView, healthData, messages, selectedSession, sessionCount, setActiveView, setPrefs, prefs }: { activeView: View; healthData: Record<string, unknown> | null; messages: ChatMessage[]; selectedSession: SessionSummary | null; sessionCount: number; setActiveView: (view: View) => void; setPrefs: (prefs: UiPrefs) => void; prefs: UiPrefs }) {
+function BottomBar({ activeView, healthData, messages, selectedSession, sessionCount, setActiveView, setPrefs, prefs, yoloActive, yoloBusy, toggleYolo }: { activeView: View; healthData: Record<string, unknown> | null; messages: ChatMessage[]; selectedSession: SessionSummary | null; sessionCount: number; setActiveView: (view: View) => void; setPrefs: (prefs: UiPrefs) => void; prefs: UiPrefs; yoloActive: boolean; yoloBusy: boolean; toggleYolo: () => void }) {
   const [elapsed, setElapsed] = useState(0)
   useEffect(() => { const started = Date.now(); const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000); return () => window.clearInterval(timer) }, [])
   const usedTokens = (selectedSession?.input_tokens || 0) + (selectedSession?.output_tokens || 0) + (selectedSession?.reasoning_tokens || 0)
@@ -475,7 +501,7 @@ function BottomBar({ activeView, healthData, messages, selectedSession, sessionC
     <div className="barGroup primaryStatus"><button title="Gateway health" onClick={() => setActiveView('capabilities')}><Circle size={10}/><b>{state}</b><span>Gateway</span></button><button title="Current view" onClick={() => setActiveView(activeView)}><Layers size={14}/><span>{activeView}</span></button></div>
     <div className="barGroup navShortcuts"><button onClick={() => setActiveView('messaging')}><MessageSquare size={14}/> Chats <b>{sessionCount || '—'}</b></button><button onClick={() => setActiveView('projects')}><FolderKanban size={14}/> Projects</button><button onClick={() => setActiveView('artifacts')}><Box size={14}/> Artifacts</button><button onClick={() => setActiveView('memory')}><Sparkles size={14}/> Memory</button><button onClick={() => setActiveView('skills')}><Wrench size={14}/> Tools</button></div>
     <button className="tokenMeter" title="Approximate selected-session token usage" onClick={() => setActiveView('messaging')}><span>{formatCompactNumber(usedTokens)}</span><i><b style={{ width: `${tokenPercent}%` }}/></i><span>{tokenPercent}%</span></button>
-    <div className="barGroup utility"><button title="Toggle compact density" onClick={() => setPrefs({ ...prefs, density: prefs.density === 'compact' ? 'cozy' : 'compact' })}><Zap size={14}/> {prefs.density === 'compact' ? 'Compact' : 'Cozy'}</button><button title="Toggle tools/terminal rail" onClick={() => setPrefs({ ...prefs, showRightRail: !prefs.showRightRail })}><TerminalIcon size={14}/> Rail</button><button title="Hermes version" onClick={() => window.open('https://github.com/NousResearch/hermes-agent', '_blank', 'noopener,noreferrer')}><Hash size={14}/> {version}</button><span><Clock size={14}/> {formatDuration(elapsed)}</span></div>
+    <div className="barGroup utility"><button className={`yoloToggle ${yoloActive ? 'active' : ''}`} title={yoloActive ? 'YOLO mode is on: Hermes will skip command approval prompts.' : 'YOLO mode is off: Hermes asks before risky actions.'} onClick={toggleYolo} disabled={yoloBusy}><Zap size={14}/> <b>{yoloActive ? 'YOLO On' : 'Safe Mode'}</b></button><button title="Toggle compact density" onClick={() => setPrefs({ ...prefs, density: prefs.density === 'compact' ? 'cozy' : 'compact' })}>{prefs.density === 'compact' ? 'Compact' : 'Cozy'}</button><button title="Toggle tools/terminal rail" onClick={() => setPrefs({ ...prefs, showRightRail: !prefs.showRightRail })}><TerminalIcon size={14}/> Rail</button><button title="Hermes version" onClick={() => window.open('https://github.com/NousResearch/hermes-agent', '_blank', 'noopener,noreferrer')}><Hash size={14}/> {version}</button><span><Clock size={14}/> {formatDuration(elapsed)}</span></div>
     <span className="footerRight"><Monitor size={14}/> {selectedSession ? sessionTitle(selectedSession) : `${messages.length} visible messages`}</span>
   </footer>
 }
@@ -501,16 +527,33 @@ function App() {
   const [selectedSession, setSelectedSession] = useState<SessionSummary | null>(null)
   const [sessionRefreshKey, setSessionRefreshKey] = useState(0)
   const [sessionCount, setSessionCount] = useState(0)
+  const [yoloActive, setYoloActive] = useState(false)
+  const [yoloBusy, setYoloBusy] = useState(false)
   const [titleOverrides, setTitleOverrides] = useState<Record<string, string>>(() => JSON.parse(localStorage.getItem('hermes-webgui:title-overrides') || '{}'))
 
   useEffect(() => { localStorage.setItem('hermes-webgui:prefs', JSON.stringify(prefs)); document.documentElement.style.setProperty('--accent', prefs.accent); document.documentElement.style.setProperty('--assistant-bubble', prefs.assistantBubble); document.documentElement.style.setProperty('--font-scale', String(prefs.fontScale)); document.documentElement.style.setProperty('--user-bubble', prefs.userBubble) }, [prefs])
   useEffect(() => { localStorage.setItem('hermes-webgui:pinned', JSON.stringify(pinnedIds)) }, [pinnedIds])
   useEffect(() => { localStorage.setItem('hermes-webgui:title-overrides', JSON.stringify(titleOverrides)) }, [titleOverrides])
   useEffect(() => { health().then(setHealthData).catch(() => setHealthData(null)); sessions().then(data => setSessionCount(asList(data).length)).catch(() => undefined) }, [])
+  useEffect(() => { yolo().then(state => setYoloActive(state.enabled)).catch(() => setYoloActive(false)) }, [])
 
   function copyText(text: string) { void navigator.clipboard?.writeText(text).catch(() => undefined) }
   function setPrefs(next: UiPrefs) { setPrefsState(next) }
   const contextActions: ContextActions = { copyText, openMenu: (event, title, items) => { event.preventDefault(); event.stopPropagation(); setMenu({ items, title, x: event.clientX, y: event.clientY }) } }
+
+  async function toggleYolo() {
+    const next = !yoloActive
+    setYoloActive(next)
+    setYoloBusy(true)
+    try {
+      const state = await setYolo(next)
+      setYoloActive(state.enabled)
+    } catch {
+      setYoloActive(!next)
+    } finally {
+      setYoloBusy(false)
+    }
+  }
 
   async function refreshSessionMessages(sessionId: string) {
     const response = await sessionMessages(sessionId)
@@ -519,9 +562,9 @@ function App() {
     setSessionRefreshKey(key => key + 1)
   }
 
-  async function ensureSession() {
+  async function ensureSession(model?: string) {
     if (selectedSession) return sessionId(selectedSession)
-    const response = await createSession()
+    const response = await createSession(model)
     const session = ((response as any).session || response) as SessionSummary
     const id = sessionId(session)
     if (!id) throw new Error('Hermes API did not return a session id')
@@ -578,7 +621,7 @@ function App() {
     <ActiveView activeView={activeView} contextActions={contextActions} messages={messages} prefs={prefs} selectedSessionId={selectedSession ? sessionId(selectedSession) : undefined} selectedTitle={selectedSession ? sessionTitle(selectedSession, titleOverrides) : undefined} sessionActions={sessionActions} setMessages={setMessages} setPrefs={setPrefs} titleOverrides={titleOverrides}/>
     <RightRail contextActions={contextActions} prefs={prefs}/>
     <ContextMenuOverlay menu={menu} close={() => setMenu(null)}/>
-    <BottomBar activeView={activeView} healthData={healthData} selectedSession={selectedSession} sessionCount={sessionCount} messages={messages} setActiveView={setActiveView} setPrefs={setPrefs} prefs={prefs}/>
+    <BottomBar activeView={activeView} healthData={healthData} selectedSession={selectedSession} sessionCount={sessionCount} messages={messages} setActiveView={setActiveView} setPrefs={setPrefs} prefs={prefs} yoloActive={yoloActive} yoloBusy={yoloBusy} toggleYolo={() => { void toggleYolo() }}/>
   </div>
 }
 

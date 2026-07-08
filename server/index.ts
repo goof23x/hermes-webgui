@@ -1,4 +1,5 @@
 import express from 'express'
+import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import os from 'node:os'
@@ -14,6 +15,7 @@ const io = new Server(server, { cors: { origin: true, credentials: true } })
 const PORT = Number(process.env.PORT || 9120)
 const HERMES_API_URL = (process.env.HERMES_API_URL || 'http://127.0.0.1:8642').replace(/\/$/, '')
 const HERMES_API_KEY = process.env.HERMES_API_KEY || process.env.API_SERVER_KEY || ''
+const HERMES_HOME = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes')
 
 app.use(express.json({ limit: '20mb' }))
 
@@ -32,6 +34,63 @@ async function proxyHermes(pathname: string, init: RequestInit = {}) {
   let body: unknown = text
   try { body = text ? JSON.parse(text) : null } catch {}
   return { ok: res.ok, status: res.status, body }
+}
+
+function configuredModelFallback() {
+  try {
+    const text = fs.readFileSync(path.join(HERMES_HOME, 'config.yaml'), 'utf8')
+    const current = text.match(/^model:\s*[\s\S]*?^\s{2}default:\s*([^\n#]+)/m)?.[1]?.trim().replace(/^['"]|['"]$/g, '') || 'hermes-agent'
+    const provider = text.match(/^model:\s*[\s\S]*?^\s{2}provider:\s*([^\n#]+)/m)?.[1]?.trim().replace(/^['"]|['"]$/g, '') || 'configured'
+    return { current: 'hermes-agent', modes: [{ id: 'hermes-agent', label: `${current} (${provider})`, model: current, provider, source: 'config.yaml' }] }
+  } catch {
+    return { current: 'hermes-agent', modes: [{ id: 'hermes-agent', label: 'Hermes Agent', source: 'default' }] }
+  }
+}
+
+function normalizeModes(body: any) {
+  const fallback = configuredModelFallback()
+  const rows = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : []
+  const modes = rows.map((row: any) => {
+    const id = String(row.id || row.name || row.model || '').trim()
+    if (!id) return null
+    const root = row.root && row.root !== id ? ` → ${row.root}` : ''
+    return { id, label: `${id}${root}`, model: row.root || id, provider: row.owned_by || row.provider || 'hermes', source: 'api-server' }
+  }).filter(Boolean)
+  return { current: modes[0]?.id || fallback.current, modes: modes.length ? modes : fallback.modes }
+}
+
+function configPath() { return path.join(HERMES_HOME, 'config.yaml') }
+
+function readYoloState() {
+  try {
+    const text = fs.readFileSync(configPath(), 'utf8')
+    const mode = text.match(/^approvals:\s*[\s\S]*?^\s{2}mode:\s*([^\n#]+)/m)?.[1]?.trim().replace(/^[\"']|[\"']$/g, '') || 'manual'
+    return { enabled: mode === 'off', mode }
+  } catch {
+    return { enabled: false, mode: 'manual' }
+  }
+}
+
+function writeYoloState(enabled: boolean) {
+  const file = configPath()
+  const previousPath = path.join(HERMES_HOME, '.webgui-yolo-previous-mode')
+  const current = readYoloState().mode
+  if (enabled && current !== 'off') fs.writeFileSync(previousPath, current)
+  const restored = (() => {
+    try { return fs.readFileSync(previousPath, 'utf8').trim() || 'manual' } catch { return 'manual' }
+  })()
+  const mode = enabled ? 'off' : restored
+  let text = ''
+  try { text = fs.readFileSync(file, 'utf8') } catch {}
+  if (/^approvals:\s*$/m.test(text)) {
+    if (/^approvals:\s*[\s\S]*?^\s{2}mode:\s*[^\n#]+/m.test(text)) text = text.replace(/^approvals:\s*[\s\S]*?^\s{2}mode:\s*[^\n#]+/m, match => match.replace(/^\s{2}mode:\s*[^\n#]+/m, `  mode: ${mode}`))
+    else text = text.replace(/^approvals:\s*$/m, `approvals:\n  mode: ${mode}`)
+  } else {
+    text = `${text.trimEnd()}\n\napprovals:\n  mode: ${mode}\n`
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, text)
+  return { enabled, mode }
 }
 
 app.get('/api/webgui/health', async (_req, res) => {
@@ -63,6 +122,29 @@ app.get('/api/webgui/models', async (_req, res) => {
     res.status(models.status).json(models.body)
   } catch (error) {
     res.status(502).json({ error: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.get('/api/webgui/modes', async (_req, res) => {
+  try {
+    const models = await proxyHermes('/v1/models')
+    if (models.ok) return res.json(normalizeModes(models.body))
+    res.status(200).json({ ...configuredModelFallback(), warning: typeof models.body === 'object' ? (models.body as any)?.error : models.body })
+  } catch (error) {
+    res.status(200).json({ ...configuredModelFallback(), warning: error instanceof Error ? error.message : String(error) })
+  }
+})
+
+app.get('/api/webgui/yolo', (_req, res) => {
+  res.json(readYoloState())
+})
+
+app.post('/api/webgui/yolo', (req, res) => {
+  try {
+    const enabled = Boolean(req.body?.enabled)
+    res.json(writeYoloState(enabled))
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
   }
 })
 
